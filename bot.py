@@ -1136,7 +1136,11 @@ async def handle_message(bot: Robot, message: Message):
 #  اجرای اصلی
 # ============================
 
-if __name__ == "__main__":
+# ============================
+#  اجرای اصلی (اصلاح شده)
+# ============================
+
+async def main():
     print("🚀 ربات هوشمند سانتی در حال راه‌اندازی...")
     load_global_db()
     print(f"✅ دیتابیس از {DATA_FILE} بارگذاری شد.")
@@ -1145,10 +1149,13 @@ if __name__ == "__main__":
     else:
         print(f"✅ مالک جهانی تنظیم شد: {GLOBAL_OWNER_SANDER_ID}")
     try:
-        bot.run()
+        await bot.run()  # <-- استفاده از await
     except KeyboardInterrupt:
         print("ربات خاموش شد.")
-        asyncio.run(save_global_db())
+        await save_global_db()
     except Exception as e:
         print(f"خطای جدی: {e}")
         traceback.print_exc()
+
+if __name__ == "__main__":
+    asyncio.run(main())
