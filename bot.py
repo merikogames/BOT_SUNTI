@@ -9,7 +9,7 @@ from rubka import Robot, Message, filters
 # ============================
 #  تنظیمات اولیه
 # ============================
-BOT_TOKEN = "BADCDH0DNSJMUQYLXJCUGOWESBZNNJZRFADTHTGCROBBCXMNDVKQCKGVEXGCREQL"  # توکن خود را وارد کنید
+BOT_TOKEN = "BADCDH0KOSEVJILXLZWSAZUXEMXYJMYREJCMOGCUHKJOYANNBBVRWIFQFBNTURLM"  # توکن خود را وارد کنید
 MASTER_PASSWORD = "zed"  # استفاده نشده، ولی نگه داشتیم
 
 # مسیر ذخیره داده‌ها (پشتیبانی از Volume در Railway)
