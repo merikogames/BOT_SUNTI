@@ -263,7 +263,7 @@ HTML_TEMPLATE = """
             const sander = info.sander_id || 'ندارد';
             const nickname = info.nickname || 'بدون لقب';
             const money = info.money || 0;
-            const fights = info.fights || 0;
+            const fights = info.stats?.total_fights || 0;
             if (search && !sander.toLowerCase().includes(search) && !nickname.includes(search)) continue;
             html += `<tr><td><code>${sander}</code></td><td>${nickname}</td><td>${money.toLocaleString()}</td><td>${fights}</td><td>
                 <button class="btn btn-primary btn-sm" onclick="openEditUser('${uid}','${sander}','${nickname}',${money})">✏️</button>
@@ -464,19 +464,12 @@ def api_data():
     all_fights = []
     all_gifts = []
     
+    # جمع‌آوری اطلاعات چت‌ها
     for chat_id, chat in data.items():
         if chat_id == "global_players":
             continue
-        chat_players = chat.get("players", {})
-        for uid, p in chat_players.items():
-            if uid in players:
-                players[uid]["money"] = p.get("money", 0)
-                if "fights" not in players[uid]:
-                    players[uid]["fights"] = 0
-                players[uid]["fights"] += len(chat.get("fights", {}))
-        
         chats[chat_id] = {
-            "players": len(chat_players),
+            "players": len(chat.get("players", {})),
             "fights": len(chat.get("fights", {})),
             "gifts": len(chat.get("gift_codes", []))
         }
@@ -495,6 +488,7 @@ def api_data():
         for gift in chat.get("gift_codes", []):
             all_gifts.append(gift)
     
+    # محاسبه کل موجودی و آمار از global_players
     for uid, info in players.items():
         total_money += info.get("money", 0)
     
@@ -523,11 +517,7 @@ def edit_user():
             db = json.load(f)
             if user_id in db.get("global_players", {}):
                 db["global_players"][user_id]["nickname"] = new_nickname
-            for chat_id, chat in db.items():
-                if chat_id == "global_players":
-                    continue
-                if user_id in chat.get("players", {}):
-                    chat["players"][user_id]["money"] = new_money
+                db["global_players"][user_id]["money"] = new_money
             f.seek(0)
             json.dump(db, f, ensure_ascii=False, indent=2)
             f.truncate()
@@ -606,12 +596,8 @@ def add_money():
             return jsonify({"status": "error", "message": "کاربر یافت نشد"}), 404
         with open(DATA_FILE, 'r+', encoding='utf-8') as f:
             db = json.load(f)
-            for chat_id, chat in db.items():
-                if chat_id == "global_players":
-                    continue
-                if target_uid in chat.get("players", {}):
-                    chat["players"][target_uid]["money"] = chat["players"][target_uid].get("money", 0) + amount
-                    break
+            if target_uid in db["global_players"]:
+                db["global_players"][target_uid]["money"] = db["global_players"][target_uid].get("money", 0) + amount
             f.seek(0)
             json.dump(db, f, ensure_ascii=False, indent=2)
             f.truncate()
@@ -719,14 +705,14 @@ def export_db():
 def reset_db():
     try:
         with open(DATA_FILE, 'w', encoding='utf-8') as f:
-            json.dump({}, f, ensure_ascii=False, indent=2)
+            json.dump({"global_players": {}}, f, ensure_ascii=False, indent=2)
         admin_logs.append({"time": time.strftime("%Y-%m-%d %H:%M:%S"), "action": "ریست کامل دیتابیس"})
         return jsonify({"status": "success"})
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500
 
 # ============================
-#  توابع کمکی ربات
+#  توابع کمکی ربات (با موجودی سراسری)
 # ============================
 
 def to_en_digits(text):
@@ -736,10 +722,36 @@ def to_en_digits(text):
         text = text.replace(p, e)
     return text
 
-def safe_get_money(player):
+def get_global_player(user_id):
+    """بازگرداندن اطلاعات سراسری کاربر"""
+    return global_db.get("global_players", {}).get(user_id)
+
+def get_global_money(user_id):
+    """موجودی سراسری کاربر"""
+    player = get_global_player(user_id)
     if not player:
         return 0
+    # اگر مالک جهانی باشد، بینهایت است (اما برای محاسبه، مقدار واقعی را برمی‌گردانیم)
+    if is_global_owner(player.get("sander_id", "")):
+        return player.get("money", 0)  # اما در فرمت‌دهی بینهایت نشان داده می‌شود
     return player.get("money", 0)
+
+def set_global_money(user_id, amount):
+    """تنظیم موجودی سراسری کاربر"""
+    if user_id in global_db.get("global_players", {}):
+        global_db["global_players"][user_id]["money"] = amount
+
+def add_global_money(user_id, amount):
+    """افزایش موجودی سراسری کاربر"""
+    if user_id in global_db.get("global_players", {}):
+        global_db["global_players"][user_id]["money"] = global_db["global_players"][user_id].get("money", 0) + amount
+
+def format_money(money, is_owner_flag=False):
+    if is_owner_flag:
+        return "💎 بینهایت 💎"
+    if money >= 999999999:
+        return "💎 بینهایت 💎"
+    return str(money)
 
 def format_time(seconds_left):
     if seconds_left <= 0:
@@ -768,30 +780,25 @@ def generate_casino_code():
     return str(random.randint(1000, 9999))
 
 def get_display_name_from_global(user_id):
-    global_data = global_db.get("global_players", {})
-    player_global = global_data.get(user_id)
-    if not player_global:
+    player = get_global_player(user_id)
+    if not player:
         return "ناشناس"
-    if player_global.get("nickname"):
-        return player_global["nickname"]
-    if player_global.get("sander_id"):
-        return player_global["sander_id"]
+    if player.get("nickname"):
+        return player["nickname"]
+    if player.get("sander_id"):
+        return player["sander_id"]
     return "User"
 
 def get_sander_id(user_id):
-    global_data = global_db.get("global_players", {})
-    player_global = global_data.get(user_id)
-    if player_global:
-        return player_global.get("sander_id")
+    player = get_global_player(user_id)
+    if player:
+        return player.get("sander_id")
     return None
 
 def is_global_owner(sander_id):
     return str(sander_id).upper() == str(GLOBAL_OWNER_SANDER_ID).upper()
 
 def is_owner(chat_data, user_id):
-    player = chat_data["players"].get(user_id)
-    if not player:
-        return False
     user_sander_id = get_sander_id(user_id)
     if not user_sander_id:
         return False
@@ -801,13 +808,6 @@ def is_owner(chat_data, user_id):
     if not owner_sid:
         return False
     return str(owner_sid).upper() == str(user_sander_id).upper()
-
-def format_money(money, is_owner_flag=False):
-    if is_owner_flag:
-        return "💎 بینهایت 💎"
-    if money >= 999999999:
-        return "💎 بینهایت 💎"
-    return str(money)
 
 def spin_slots():
     rand = random.random()
@@ -828,7 +828,7 @@ def calculate_prize(bet, multiplier):
     return bet * multiplier
 
 # ============================
-#  مدیریت دیتابیس
+#  مدیریت دیتابیس (با همگام‌سازی)
 # ============================
 
 def load_global_db():
@@ -848,6 +848,20 @@ def load_global_db():
                         for key in default:
                             if key not in chat_data:
                                 chat_data[key] = default[key]
+                    # همگام‌سازی: اطمینان از وجود همه کاربران چت‌ها در global_players
+                    for chat_id, chat_data in global_db.items():
+                        if chat_id == "global_players":
+                            continue
+                        for user_id in chat_data.get("players", {}):
+                            if user_id not in global_db["global_players"]:
+                                # ایجاد کاربر جدید در global_players با موجودی صفر
+                                new_sander_id = generate_sander_id()
+                                global_db["global_players"][user_id] = {
+                                    "sander_id": new_sander_id,
+                                    "nickname": "",
+                                    "money": 0,
+                                    "stats": {"total_fights": 0, "wins": 0, "losses": 0, "transfer_count": 0}
+                                }
                 else:
                     global_db = {"global_players": {}}
         else:
@@ -890,20 +904,21 @@ async def ensure_player_exists(user_id, chat_data):
         new_sander_id = generate_sander_id()
         global_players[user_id] = {
             "sander_id": new_sander_id,
-            "nickname": ""
+            "nickname": "",
+            "money": 0,
+            "stats": {"total_fights": 0, "wins": 0, "losses": 0, "transfer_count": 0}
         }
         global_db["global_players"] = global_players
         await save_global_db()
 
+    # در چت نیز ثبت شود (اگر نباشد)
     if user_id not in chat_data["players"]:
         chat_data["players"][user_id] = {
             "last_dood_time": 0,
             "last_transfer_time": 0,
             "last_spin_time": 0,
             "last_casino_time": 0,
-            "used_gift_codes": [],
-            "stats": {"total_fights": 0, "wins": 0, "losses": 0, "transfer_count": 0},
-            "money": 0
+            "used_gift_codes": []
         }
         await save_global_db()
 
@@ -937,7 +952,7 @@ async def send_long_message(message, text, chunk_size=4000):
         await message.reply(chunk)
 
 # ============================
-#  توابع کازینو
+#  توابع کازینو (با موجودی سراسری)
 # ============================
 
 async def process_single_player_game(chat_id, message):
@@ -948,16 +963,21 @@ async def process_single_player_game(chat_id, message):
     user_id = game["host"]
     bet = game["bet"]
     chat_data = get_chat_data(chat_id)
-    player = chat_data["players"].get(user_id)
+    global_player = get_global_player(user_id)
+    if not global_player:
+        return
 
     symbols, multiplier = spin_slots()
     prize = calculate_prize(bet, multiplier)
 
-    before_money = safe_get_money(player)
-    if not is_owner(chat_data, user_id):
-        player["money"] -= bet
-        player["money"] += prize
-    after_money = safe_get_money(player)
+    before_money = global_player.get("money", 0)
+    is_owner_flag = is_owner(chat_data, user_id)
+    if not is_owner_flag:
+        global_player["money"] -= bet
+        global_player["money"] += prize
+    after_money = global_player.get("money", 0)
+
+    await save_global_db()
 
     symbols_str = " | ".join(symbols)
     if multiplier == 0:
@@ -977,7 +997,6 @@ async def process_single_player_game(chat_id, message):
 💰 **موجودی بعد:** {after_money}"""
 
     await message.reply(msg)
-    await save_global_db()
     del casino_games[chat_id]
 
 async def process_multiplayer_game(chat_id, message):
@@ -1008,16 +1027,16 @@ async def process_multiplayer_game(chat_id, message):
     total_prize = bet * len(players)
 
     for uid in players:
-        player_data = chat_data["players"].get(uid)
-        if not player_data:
+        global_player = get_global_player(uid)
+        if not global_player:
             continue
+        is_owner_flag = is_owner(chat_data, uid)
         if uid == winner:
-            if not is_owner(chat_data, uid):
-                player_data["money"] -= bet
-                player_data["money"] += total_prize
+            if not is_owner_flag:
+                global_player["money"] = global_player.get("money", 0) - bet + total_prize
         else:
-            if not is_owner(chat_data, uid):
-                player_data["money"] -= bet
+            if not is_owner_flag:
+                global_player["money"] = global_player.get("money", 0) - bet
 
     await save_global_db()
 
@@ -1064,8 +1083,9 @@ async def start_handler(bot: Robot, message: Message):
         player = await ensure_player_exists(user_id, chat_data)
         is_owner_flag = is_owner(chat_data, user_id)
         sander_id = get_sander_id(user_id) or "نامشخص"
-        nickname = global_db.get("global_players", {}).get(user_id, {}).get("nickname") or "بدون لقب"
-        money_str = format_money(player["money"], is_owner_flag)
+        nickname = get_display_name_from_global(user_id)
+        money = get_global_money(user_id)
+        money_str = format_money(money, is_owner_flag)
         response = f'''💠 **خوش آمدید به ربات سانتی!** 💠
 ━━━━━━━━━━━━━━━━━━━━━━━
 🆔 **شناسه (Sander ID):** `{sander_id}`
@@ -1092,7 +1112,7 @@ async def handle_message(bot: Robot, message: Message):
         if "chat_logs" not in chat_data:
             chat_data["chat_logs"] = []
         sander_id = get_sander_id(user_id) or "بدون شناسه"
-        nickname = global_db.get("global_players", {}).get(user_id, {}).get("nickname") or "بدون لقب"
+        nickname = get_display_name_from_global(user_id)
         log_entry = f"[{int(time.time())}] <{sander_id} ({nickname})>: {text}"
         chat_data["chat_logs"].append(log_entry)
 
@@ -1148,13 +1168,13 @@ async def handle_message(bot: Robot, message: Message):
 • کوoldown ۲ دقیقه بین هر بازی
 
 🪵 **دولداران**
-• `دولداران` — لیست ثروتمندان
+• `دولداران` — لیست ثروتمندان (بر اساس موجودی سراسری)
 • `دولداران [عدد]` — لیست تعداد دلخواه
 
 ⚠️ **دستورات مدیریتی (فقط مالکان):**
 • `متن` — مشاهده آمار پیام‌های چت
 • `راهنمای لیدر` — راهنمای اختصاصی مالک جهانی
-• `ریست دول` — صفر کردن موجودی همه
+• `ریست دول` — صفر کردن موجودی همه (به جز خودتان)
 • `حذف [کد]` — حذف مبارزه
 • `منفی [مقدار] از [آیدی]` — کم کردن پول کاربر
 • `ساخت کد هدیه [مبلغ] بین [تعداد] اسم [نام]`
@@ -1208,7 +1228,7 @@ async def handle_message(bot: Robot, message: Message):
                 return
             global_players = global_db.get("global_players", {})
             if user_id not in global_players:
-                global_players[user_id] = {"sander_id": generate_sander_id()}
+                global_players[user_id] = {"sander_id": generate_sander_id(), "money": 0, "stats": {"total_fights": 0, "wins": 0, "losses": 0, "transfer_count": 0}}
             global_players[user_id]["nickname"] = new_nickname
             global_db["global_players"] = global_players
             await save_global_db()
@@ -1320,9 +1340,9 @@ async def handle_message(bot: Robot, message: Message):
                 await save_global_db()
                 return
             count = 0
-            for uid, p in chat_data["players"].items():
+            for uid in global_db.get("global_players", {}).keys():
                 if uid != user_id:
-                    p["money"] = 0
+                    global_db["global_players"][uid]["money"] = 0
                     count += 1
             await save_global_db()
             await message.reply(f"✅ **دول ریست شد!** (تعداد: {count})")
@@ -1387,22 +1407,17 @@ async def handle_message(bot: Robot, message: Message):
                 await message.reply("❌ مالک نمی‌تواند پول خودش را کم کند!")
                 await save_global_db()
                 return
-            target_player = chat_data["players"].get(target_uid)
-            if not target_player:
-                await message.reply("❌ کاربر در این چت ثبت نشده است!")
-                await save_global_db()
-                return
-            current_money = safe_get_money(target_player)
+            current_money = global_players[target_uid].get("money", 0)
             if current_money < amount:
-                target_player["money"] = 0
+                global_players[target_uid]["money"] = 0
                 await save_global_db()
                 await message.reply(f"✅ موجودی به صفر رسید.")
             else:
-                target_player["money"] -= amount
+                global_players[target_uid]["money"] -= amount
                 await save_global_db()
                 await message.reply(f"""✅ **عملیات موفق!**
 کاربر: `{target_sid_input}`
-موجودی بعد: {target_player['money']}""")
+موجودی بعد: {global_players[target_uid]['money']}""")
             return
 
         if lower_text.startswith("ساخت کد هدیه"):
@@ -1516,7 +1531,7 @@ async def handle_message(bot: Robot, message: Message):
             await save_global_db()
             return
 
-        # ===== جوایز رایگان =====
+        # ===== جوایز رایگان (با موجودی سراسری) =====
         if lower_text == "سانتی":
             now = time.time()
             global_time = chat_data.get("global_sanati_time", 0)
@@ -1527,15 +1542,15 @@ async def handle_message(bot: Robot, message: Message):
                 await save_global_db()
                 return
             prize_amount = 5
-            before_money = safe_get_money(player)
-            after_money = before_money + prize_amount
-            player["money"] = after_money
+            global_player = get_global_player(user_id)
+            before_money = global_player.get("money", 0)
+            global_player["money"] = before_money + prize_amount
             chat_data["global_sanati_time"] = now
             await save_global_db()
             await message.reply(f"""🎉 **جایزه روزانه سانتی!**
 🏆 برنده: {get_display_name_from_global(user_id)}
 💰 مقدار: {prize_amount}
-قبل: {before_money} | بعد: {after_money}""")
+قبل: {before_money} | بعد: {global_player['money']}""")
             return
 
         if lower_text == "دود":
@@ -1548,14 +1563,14 @@ async def handle_message(bot: Robot, message: Message):
                 await save_global_db()
                 return
             amount = random.randint(1, 30)
-            before_money = safe_get_money(player)
-            after_money = before_money + amount
-            player["money"] = after_money
+            global_player = get_global_player(user_id)
+            before_money = global_player.get("money", 0)
+            global_player["money"] = before_money + amount
             player["last_dood_time"] = now
             await save_global_db()
             await message.reply(f"""🎁 **دود ۳ ساعته!**
 مقدار: {amount}
-قبل: {before_money} | بعد: {after_money}""")
+قبل: {before_money} | بعد: {global_player['money']}""")
             return
 
         # گردونه با شانس پوچ کمتر
@@ -1578,21 +1593,21 @@ async def handle_message(bot: Robot, message: Message):
                     result = item
                     break
             if isinstance(result, int):
-                before_money = safe_get_money(player)
-                after_money = before_money + result
-                player["money"] = after_money
+                global_player = get_global_player(user_id)
+                before_money = global_player.get("money", 0)
+                global_player["money"] = before_money + result
                 player["last_spin_time"] = now
                 await save_global_db()
                 await message.reply(f"""🎡 **نتیجه گردونه!**
 🎁 جایزه: {result} سانت
-قبل: {before_money} | بعد: {after_money}""")
+قبل: {before_money} | بعد: {global_player['money']}""")
             else:
                 player["last_spin_time"] = now
                 await save_global_db()
                 await message.reply("😢 **پوچ!** دوباره تلاش کنید.")
             return
 
-        # ===== انتقال پول =====
+        # ===== انتقال پول (با موجودی سراسری) =====
         if lower_text.startswith("اهدای سانت"):
             parts = lower_text[len("اهدای سانت"):].strip().split()
             if len(parts) < 2:
@@ -1623,11 +1638,6 @@ async def handle_message(bot: Robot, message: Message):
                 await message.reply("❌ نمی‌توانید به خودتان بدهید!")
                 await save_global_db()
                 return
-            target_player = chat_data["players"].get(target_uid)
-            if not target_player:
-                await message.reply("❌ کاربر در این چت ثبت نشده است!")
-                await save_global_db()
-                return
             now = time.time()
             last_time = player.get("last_transfer_time", 0)
             if now - last_time < 60:
@@ -1635,19 +1645,28 @@ async def handle_message(bot: Robot, message: Message):
                 await save_global_db()
                 return
             is_sender_owner = is_owner(chat_data, user_id)
-            sender_money = safe_get_money(player)
+            sender_global = get_global_player(user_id)
+            target_global = get_global_player(target_uid)
+            if not sender_global or not target_global:
+                await message.reply("❌ خطا در اطلاعات کاربران!")
+                await save_global_db()
+                return
+            sender_money = sender_global.get("money", 0)
             if not is_sender_owner and sender_money < amount:
                 await message.reply(f"❌ موجودی کافی ندارید! نیاز به {amount}.")
                 await save_global_db()
                 return
             if not is_sender_owner:
-                player["money"] -= amount
-            target_player["money"] += amount
+                sender_global["money"] -= amount
+            target_global["money"] += amount
             player["last_transfer_time"] = now
-            player["stats"]["transfer_count"] += 1
+            # به‌روزرسانی آمار انتقال (در سراسری)
+            if "stats" not in sender_global:
+                sender_global["stats"] = {"total_fights": 0, "wins": 0, "losses": 0, "transfer_count": 0}
+            sender_global["stats"]["transfer_count"] = sender_global["stats"].get("transfer_count", 0) + 1
             await save_global_db()
-            sender_display = format_money(player["money"], is_sender_owner)
-            receiver_display = format_money(safe_get_money(target_player), is_owner(chat_data, target_uid))
+            sender_display = format_money(sender_global["money"], is_sender_owner)
+            receiver_display = format_money(target_global["money"], is_owner(chat_data, target_uid))
             await message.reply(f"""✅ **انتقال موفق!**
 به: `{get_display_name_from_global(target_uid)}` ({target_sid})
 مقدار: {amount}
@@ -1692,8 +1711,9 @@ async def handle_message(bot: Robot, message: Message):
                 await message.reply("❌ تعداد استفاده تکمیل شده است!")
                 await save_global_db()
                 return
-            before_money = safe_get_money(player)
-            player["money"] += found_gift["amount"]
+            global_player = get_global_player(user_id)
+            before_money = global_player.get("money", 0)
+            global_player["money"] = before_money + found_gift["amount"]
             player["used_gift_codes"].append(code_input)
             if found_gift["code"] != GIFT_CODE_DEFAULT:
                 for g in chat_data["gift_codes"]:
@@ -1706,21 +1726,27 @@ async def handle_message(bot: Robot, message: Message):
             await save_global_db()
             await message.reply(f"""🎁 **کد معتبر!**
 مبلغ: {found_gift['amount']}
-قبل: {before_money} | بعد: {player['money']}""")
+قبل: {before_money} | بعد: {global_player['money']}""")
             return
 
-        # ===== دولداران =====
+        # ===== دولداران (بر اساس موجودی سراسری) =====
         if lower_text.startswith("دولداران"):
             parts = lower_text.split()
+            # مرتب‌سازی بر اساس موجودی سراسری
+            sorted_players = sorted(
+                global_db.get("global_players", {}).items(),
+                key=lambda x: x[1].get("money", 0),
+                reverse=True
+            )
             if len(parts) == 1:
-                sorted_players = sorted(chat_data["players"].items(), key=lambda x: safe_get_money(x[1]), reverse=True)
                 top_list = []
                 is_current_owner = is_owner(chat_data, user_id)
-                for uid, p in sorted_players:
+                for uid, gdata in sorted_players:
                     if is_current_owner and uid == user_id:
                         continue
                     display = get_display_name_from_global(uid)
-                    money_str = format_money(safe_get_money(p))
+                    money = gdata.get("money", 0)
+                    money_str = format_money(money, is_global_owner(gdata.get("sander_id", "")))
                     top_list.append(f"#{len(top_list)+1}. `{display}` → {money_str}")
                 if not top_list:
                     await message.reply("هیچ کاربری غیر از مالک ثبت نشده است!")
@@ -1742,25 +1768,24 @@ async def handle_message(bot: Robot, message: Message):
                 await message.reply("⚠️ لطفاً یک عدد معتبر و مثبت وارد کنید.")
                 await save_global_db()
                 return
-            all_users = [uid for uid in chat_data["players"].keys()]
-            total_available = len(all_users)
+            total_available = len(sorted_players)
             if limit > total_available:
                 await message.reply(f"""⚠️ **توجه!**
 تعداد درخواستی: `{limit}` نفر
 کل کاربران موجود: `{total_available}` نفر است.""")
                 await save_global_db()
                 return
-            sorted_players = sorted(chat_data["players"].items(), key=lambda x: safe_get_money(x[1]), reverse=True)
             top_list = []
             is_current_owner = is_owner(chat_data, user_id)
             count = 0
-            for uid, p in sorted_players:
+            for uid, gdata in sorted_players:
                 if count >= limit:
                     break
                 if is_current_owner and uid == user_id:
                     continue
                 display = get_display_name_from_global(uid)
-                money_str = format_money(safe_get_money(p))
+                money = gdata.get("money", 0)
+                money_str = format_money(money, is_global_owner(gdata.get("sander_id", "")))
                 top_list.append(f"{count+1}. `{display}` → {money_str}")
                 count += 1
             if not top_list:
@@ -1777,14 +1802,20 @@ async def handle_message(bot: Robot, message: Message):
 
         # ===== پروفایل =====
         if lower_text == "پروف":
-            stats = player.get("stats", {})
+            global_player = get_global_player(user_id)
+            if not global_player:
+                await message.reply("❌ اطلاعات شما یافت نشد!")
+                await save_global_db()
+                return
+            stats = global_player.get("stats", {})
             wins = stats.get('wins', 0)
             losses = stats.get('losses', 0)
             total_fights = stats.get('total_fights', 0)
             win_rate = (wins / total_fights * 100) if total_fights > 0 else 0.0
-            money_str = format_money(safe_get_money(player), is_owner_flag)
-            nickname = global_db.get("global_players", {}).get(user_id, {}).get("nickname") or 'بدون لقب'
-            sander_id = get_sander_id(user_id) or "نامشخص"
+            money = global_player.get("money", 0)
+            money_str = format_money(money, is_owner_flag)
+            nickname = global_player.get("nickname") or 'بدون لقب'
+            sander_id = global_player.get("sander_id") or "نامشخص"
             msg = f"""
 👤 **پروفایل شخصی شما**
 ━━━━━━━━━━━━━━━━━━━━━━━
@@ -1821,7 +1852,7 @@ async def handle_message(bot: Robot, message: Message):
                 await save_global_db()
                 return
             is_requester_owner = is_owner(chat_data, user_id)
-            sender_money = safe_get_money(player)
+            sender_money = get_global_money(user_id)
             if not is_requester_owner and sender_money < bet:
                 await message.reply(f"❌ موجودی کافی نیست! نیاز به {bet} سانت دارید.")
                 await save_global_db()
@@ -1847,7 +1878,7 @@ async def handle_message(bot: Robot, message: Message):
 ━━━━━━━━━━━━━━━━━━━━━━━
 💰 **شرط:** {bet} سانت
 🔑 **کد مبارزه:** `{code}`
-💰 **موجودی شما:** {format_money(safe_get_money(player), is_owner_flag)}
+💰 **موجودی شما:** {format_money(sender_money, is_owner_flag)}
 ━━━━━━━━━━━━━━━━━━━━━━━
 هر کسی کد بالا را با دستور `تایید` وارد کند، حریف شما می‌شود.""")
             return
@@ -1868,7 +1899,7 @@ async def handle_message(bot: Robot, message: Message):
             await save_global_db()
             return
 
-        # ===== تایید مبارزه =====
+        # ===== تایید مبارزه (با موجودی سراسری) =====
         if lower_text.startswith("تایید"):
             parts = lower_text.split()
             if len(parts) < 2:
@@ -1888,42 +1919,47 @@ async def handle_message(bot: Robot, message: Message):
                         continue
                     if target_uid is None:
                         is_target_owner = is_owner(chat_data, user_id)
-                        target_money = safe_get_money(player)
+                        target_money = get_global_money(user_id)
                         if not is_target_owner and target_money < f["bet_amount"]:
                             await message.reply(f"❌ موجودی شما کافی نیست! نیاز به {f['bet_amount']} سانت دارید.")
                             await save_global_db()
                             continue
                         if not is_target_owner:
-                            player["money"] -= f["bet_amount"]
+                            target_global = get_global_player(user_id)
+                            if target_global:
+                                target_global["money"] = target_global.get("money", 0) - f["bet_amount"]
                         f["target"] = user_id
                         f["status"] = "pending"
                         winner_uid = f["requester"] if random.random() > 0.5 else f["target"]
                         loser_uid = f["target"] if winner_uid == f["requester"] else f["requester"]
                         bet_val = f["bet_amount"]
-                        if "stats" not in chat_data["players"][winner_uid]:
-                            chat_data["players"][winner_uid]["stats"] = {"total_fights": 0, "wins": 0, "losses": 0, "transfer_count": 0}
-                        if "stats" not in chat_data["players"][loser_uid]:
-                            chat_data["players"][loser_uid]["stats"] = {"total_fights": 0, "wins": 0, "losses": 0, "transfer_count": 0}
-                        chat_data["players"][winner_uid]["stats"]["wins"] += 1
-                        chat_data["players"][loser_uid]["stats"]["losses"] += 1
-                        chat_data["players"][winner_uid]["stats"]["total_fights"] += 1
-                        chat_data["players"][loser_uid]["stats"]["total_fights"] += 1
-                        if not is_owner(chat_data, winner_uid):
-                            winner_player = chat_data["players"][winner_uid]
-                            winner_player["money"] += bet_val
-                        if not is_owner(chat_data, loser_uid):
-                            loser_player = chat_data["players"][loser_uid]
-                            loser_money = safe_get_money(loser_player)
-                            if loser_money >= bet_val:
-                                loser_player["money"] -= bet_val
-                            else:
-                                loser_player["money"] = 0
+                        # به‌روزرسانی آمار در global_players
+                        winner_global = get_global_player(winner_uid)
+                        loser_global = get_global_player(loser_uid)
+                        if winner_global:
+                            if "stats" not in winner_global:
+                                winner_global["stats"] = {"total_fights": 0, "wins": 0, "losses": 0, "transfer_count": 0}
+                            winner_global["stats"]["wins"] = winner_global["stats"].get("wins", 0) + 1
+                            winner_global["stats"]["total_fights"] = winner_global["stats"].get("total_fights", 0) + 1
+                            if not is_owner(chat_data, winner_uid):
+                                winner_global["money"] = winner_global.get("money", 0) + bet_val
+                        if loser_global:
+                            if "stats" not in loser_global:
+                                loser_global["stats"] = {"total_fights": 0, "wins": 0, "losses": 0, "transfer_count": 0}
+                            loser_global["stats"]["losses"] = loser_global["stats"].get("losses", 0) + 1
+                            loser_global["stats"]["total_fights"] = loser_global["stats"].get("total_fights", 0) + 1
+                            if not is_owner(chat_data, loser_uid):
+                                loser_global["money"] = loser_global.get("money", 0) - bet_val
+                                if loser_global["money"] < 0:
+                                    loser_global["money"] = 0
                         del chat_data["fights"][k]
                         await save_global_db()
                         w_name = get_display_name_from_global(winner_uid)
                         l_name = get_display_name_from_global(loser_uid)
-                        w_money_str = format_money(safe_get_money(chat_data["players"][winner_uid]), is_owner(chat_data, winner_uid))
-                        l_money_str = format_money(safe_get_money(chat_data["players"][loser_uid]), is_owner(chat_data, loser_uid))
+                        w_money = get_global_money(winner_uid)
+                        l_money = get_global_money(loser_uid)
+                        w_money_str = format_money(w_money, is_owner(chat_data, winner_uid))
+                        l_money_str = format_money(l_money, is_owner(chat_data, loser_uid))
                         await message.reply(f"""✅ **نتیجه مبارزه اعلام شد!**
 ━━━━━━━━━━━━━━━━━━━━━━━
 🏆 **برنده:** `{w_name}`
@@ -2036,7 +2072,7 @@ async def handle_message(bot: Robot, message: Message):
                 await save_global_db()
                 return
 
-            if not is_owner_flag and safe_get_money(player) < bet_amount:
+            if not is_owner_flag and get_global_money(user_id) < bet_amount:
                 await message.reply(f"❌ موجودی شما کافی نیست! نیاز به {bet_amount} سانت دارید.")
                 del casino_games[chat_id]
                 await save_global_db()
@@ -2116,8 +2152,7 @@ async def handle_message(bot: Robot, message: Message):
                 await save_global_db()
                 return
 
-            player_data = chat_data["players"].get(user_id)
-            if not is_owner(chat_data, user_id) and safe_get_money(player_data) < game["bet"]:
+            if not is_owner(chat_data, user_id) and get_global_money(user_id) < game["bet"]:
                 await message.reply(f"❌ موجودی شما کافی نیست! نیاز به {game['bet']} سانت دارید.")
                 await save_global_db()
                 return
