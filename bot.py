@@ -13,6 +13,7 @@ from flask import Flask, render_template_string, jsonify, request
 # ============================
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 
+# مسیر دیتابیس با پشتیبانی از Volume
 DATA_DIR = os.environ.get("DATA_DIR", "/app/data")
 if not os.path.exists(DATA_DIR):
     DATA_DIR = "data"
@@ -36,7 +37,7 @@ admin_logs = []
 bot = Robot(BOT_TOKEN)
 
 # ============================
-#  Flask Web Panel (مدیریت کامل)
+#  Flask Web Panel
 # ============================
 app = Flask(__name__)
 app.secret_key = "admin_panel_secret_key_12345"
@@ -103,7 +104,6 @@ HTML_TEMPLATE = """
         .toast-error { background: #ff4444; }
         .toast-info { background: #f7971e; }
         @keyframes slideIn { from { transform: translateX(100px); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
-        .empty-state { text-align: center; padding: 40px; color: #666; }
         .refresh-btn { background: transparent; border: 1px solid #2a2a4a; color: #aaa; padding: 6px 16px; border-radius: 8px; cursor: pointer; font-family: 'Vazir', Tahoma, sans-serif; }
         .refresh-btn:hover { background: #1e1e3a; color: #fff; }
         @media (max-width: 600px) { .header h1 { font-size: 22px; } .nav-tabs button { padding: 6px 12px; font-size: 12px; } .stats-grid { grid-template-columns: repeat(2, 1fr); } }
@@ -464,7 +464,6 @@ def api_data():
     all_fights = []
     all_gifts = []
     
-    # جمع‌آوری اطلاعات چت‌ها
     for chat_id, chat in data.items():
         if chat_id == "global_players":
             continue
@@ -488,7 +487,6 @@ def api_data():
         for gift in chat.get("gift_codes", []):
             all_gifts.append(gift)
     
-    # محاسبه کل موجودی و آمار از global_players
     for uid, info in players.items():
         total_money += info.get("money", 0)
     
@@ -712,7 +710,7 @@ def reset_db():
         return jsonify({"status": "error", "message": str(e)}), 500
 
 # ============================
-#  توابع کمکی ربات (با موجودی سراسری)
+#  توابع کمکی ربات
 # ============================
 
 def to_en_digits(text):
@@ -723,28 +721,13 @@ def to_en_digits(text):
     return text
 
 def get_global_player(user_id):
-    """بازگرداندن اطلاعات سراسری کاربر"""
     return global_db.get("global_players", {}).get(user_id)
 
 def get_global_money(user_id):
-    """موجودی سراسری کاربر"""
     player = get_global_player(user_id)
     if not player:
         return 0
-    # اگر مالک جهانی باشد، بینهایت است (اما برای محاسبه، مقدار واقعی را برمی‌گردانیم)
-    if is_global_owner(player.get("sander_id", "")):
-        return player.get("money", 0)  # اما در فرمت‌دهی بینهایت نشان داده می‌شود
     return player.get("money", 0)
-
-def set_global_money(user_id, amount):
-    """تنظیم موجودی سراسری کاربر"""
-    if user_id in global_db.get("global_players", {}):
-        global_db["global_players"][user_id]["money"] = amount
-
-def add_global_money(user_id, amount):
-    """افزایش موجودی سراسری کاربر"""
-    if user_id in global_db.get("global_players", {}):
-        global_db["global_players"][user_id]["money"] = global_db["global_players"][user_id].get("money", 0) + amount
 
 def format_money(money, is_owner_flag=False):
     if is_owner_flag:
@@ -828,7 +811,7 @@ def calculate_prize(bet, multiplier):
     return bet * multiplier
 
 # ============================
-#  مدیریت دیتابیس (با همگام‌سازی)
+#  مدیریت دیتابیس
 # ============================
 
 def load_global_db():
@@ -848,13 +831,12 @@ def load_global_db():
                         for key in default:
                             if key not in chat_data:
                                 chat_data[key] = default[key]
-                    # همگام‌سازی: اطمینان از وجود همه کاربران چت‌ها در global_players
+                    # همگام‌سازی کاربران چت‌ها با global_players
                     for chat_id, chat_data in global_db.items():
                         if chat_id == "global_players":
                             continue
                         for user_id in chat_data.get("players", {}):
                             if user_id not in global_db["global_players"]:
-                                # ایجاد کاربر جدید در global_players با موجودی صفر
                                 new_sander_id = generate_sander_id()
                                 global_db["global_players"][user_id] = {
                                     "sander_id": new_sander_id,
@@ -911,7 +893,6 @@ async def ensure_player_exists(user_id, chat_data):
         global_db["global_players"] = global_players
         await save_global_db()
 
-    # در چت نیز ثبت شود (اگر نباشد)
     if user_id not in chat_data["players"]:
         chat_data["players"][user_id] = {
             "last_dood_time": 0,
@@ -952,7 +933,7 @@ async def send_long_message(message, text, chunk_size=4000):
         await message.reply(chunk)
 
 # ============================
-#  توابع کازینو (با موجودی سراسری)
+#  توابع کازینو
 # ============================
 
 async def process_single_player_game(chat_id, message):
@@ -973,8 +954,7 @@ async def process_single_player_game(chat_id, message):
     before_money = global_player.get("money", 0)
     is_owner_flag = is_owner(chat_data, user_id)
     if not is_owner_flag:
-        global_player["money"] -= bet
-        global_player["money"] += prize
+        global_player["money"] = before_money - bet + prize
     after_money = global_player.get("money", 0)
 
     await save_global_db()
@@ -1174,7 +1154,7 @@ async def handle_message(bot: Robot, message: Message):
 ⚠️ **دستورات مدیریتی (فقط مالکان):**
 • `متن` — مشاهده آمار پیام‌های چت
 • `راهنمای لیدر` — راهنمای اختصاصی مالک جهانی
-• `ریست دول` — صفر کردن موجودی همه (به جز خودتان)
+• `ریست دول` — صفر کردن موجودی همه
 • `حذف [کد]` — حذف مبارزه
 • `منفی [مقدار] از [آیدی]` — کم کردن پول کاربر
 • `ساخت کد هدیه [مبلغ] بین [تعداد] اسم [نام]`
@@ -1228,7 +1208,12 @@ async def handle_message(bot: Robot, message: Message):
                 return
             global_players = global_db.get("global_players", {})
             if user_id not in global_players:
-                global_players[user_id] = {"sander_id": generate_sander_id(), "money": 0, "stats": {"total_fights": 0, "wins": 0, "losses": 0, "transfer_count": 0}}
+                global_players[user_id] = {
+                    "sander_id": generate_sander_id(),
+                    "nickname": "",
+                    "money": 0,
+                    "stats": {"total_fights": 0, "wins": 0, "losses": 0, "transfer_count": 0}
+                }
             global_players[user_id]["nickname"] = new_nickname
             global_db["global_players"] = global_players
             await save_global_db()
@@ -1531,7 +1516,7 @@ async def handle_message(bot: Robot, message: Message):
             await save_global_db()
             return
 
-        # ===== جوایز رایگان (با موجودی سراسری) =====
+        # ===== جوایز رایگان =====
         if lower_text == "سانتی":
             now = time.time()
             global_time = chat_data.get("global_sanati_time", 0)
@@ -1607,7 +1592,7 @@ async def handle_message(bot: Robot, message: Message):
                 await message.reply("😢 **پوچ!** دوباره تلاش کنید.")
             return
 
-        # ===== انتقال پول (با موجودی سراسری) =====
+        # ===== انتقال پول =====
         if lower_text.startswith("اهدای سانت"):
             parts = lower_text[len("اهدای سانت"):].strip().split()
             if len(parts) < 2:
@@ -1660,7 +1645,6 @@ async def handle_message(bot: Robot, message: Message):
                 sender_global["money"] -= amount
             target_global["money"] += amount
             player["last_transfer_time"] = now
-            # به‌روزرسانی آمار انتقال (در سراسری)
             if "stats" not in sender_global:
                 sender_global["stats"] = {"total_fights": 0, "wins": 0, "losses": 0, "transfer_count": 0}
             sender_global["stats"]["transfer_count"] = sender_global["stats"].get("transfer_count", 0) + 1
@@ -1729,10 +1713,9 @@ async def handle_message(bot: Robot, message: Message):
 قبل: {before_money} | بعد: {global_player['money']}""")
             return
 
-        # ===== دولداران (بر اساس موجودی سراسری) =====
+        # ===== دولداران (سراسری) =====
         if lower_text.startswith("دولداران"):
             parts = lower_text.split()
-            # مرتب‌سازی بر اساس موجودی سراسری
             sorted_players = sorted(
                 global_db.get("global_players", {}).items(),
                 key=lambda x: x[1].get("money", 0),
@@ -1899,7 +1882,7 @@ async def handle_message(bot: Robot, message: Message):
             await save_global_db()
             return
 
-        # ===== تایید مبارزه (با موجودی سراسری) =====
+        # ===== تایید مبارزه =====
         if lower_text.startswith("تایید"):
             parts = lower_text.split()
             if len(parts) < 2:
@@ -1933,7 +1916,6 @@ async def handle_message(bot: Robot, message: Message):
                         winner_uid = f["requester"] if random.random() > 0.5 else f["target"]
                         loser_uid = f["target"] if winner_uid == f["requester"] else f["requester"]
                         bet_val = f["bet_amount"]
-                        # به‌روزرسانی آمار در global_players
                         winner_global = get_global_player(winner_uid)
                         loser_global = get_global_player(loser_uid)
                         if winner_global:
@@ -1994,7 +1976,7 @@ async def handle_message(bot: Robot, message: Message):
                 await message.reply("⚠️ شما هیچ مبارزه فعالی برای لغو ندارید.")
             return
 
-        # ===== متن (آمار پیام‌ها) =====
+        # ===== متن =====
         if lower_text == "متن":
             if not is_owner_flag:
                 await message.reply("⛔ **خطا:** شما دسترسی مشاهده آمار پیام‌ها را ندارید.")
@@ -2114,7 +2096,7 @@ async def handle_message(bot: Robot, message: Message):
                 await save_global_db()
                 return
 
-        # ورود به بازی کازینو
+        # ورود به بازی
         if lower_text.startswith("ورود"):
             parts = lower_text.split()
             if len(parts) < 2:
@@ -2176,7 +2158,7 @@ async def handle_message(bot: Robot, message: Message):
         await save_global_db()
 
 # ============================
-#  راه‌اندازی Flask در ترد جداگانه
+#  راه‌اندازی Flask
 # ============================
 
 def start_web_panel():
