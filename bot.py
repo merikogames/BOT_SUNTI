@@ -9,13 +9,11 @@ from rubka import Robot, Message, filters
 # ============================
 #  تنظیمات اولیه
 # ============================
-BOT_TOKEN = os.environ.get("BOT_TOKEN") # توکن خود را وارد کنید
-MASTER_PASSWORD = "zed"  # استفاده نشده، ولی نگه داشتیم
+BOT_TOKEN = os.environ.get("BOT_TOKEN")  # توکن از متغیر محیطی
 
 # مسیر ذخیره داده‌ها (پشتیبانی از Volume در Railway)
-DATA_DIR = os.environ.get("DATA_DIR", "/app/data")  # در ریلوی، Volume را به /app/data متصل کنید
+DATA_DIR = os.environ.get("DATA_DIR", "/app/data")
 if not os.path.exists(DATA_DIR):
-    # در محیط محلی، پوشه data را می‌سازیم
     DATA_DIR = "data"
     os.makedirs(DATA_DIR, exist_ok=True)
 
@@ -26,12 +24,15 @@ GIFT_AMOUNT_DEFAULT = 1
 MAX_GIFT_USERS_DEFAULT = 1
 SPIN_COOLDOWN = 3600  # ۱ ساعت
 
-# شناسه مالک جهانی (حتمن مقداردهی کنید)
-GLOBAL_OWNER_SANDER_ID = "0MK1E1"  # با شناسه واقعی خود جایگزین کنید
+# شناسه مالک جهانی (پیش‌فرض، با IM_BEST قابل تغییر)
+GLOBAL_OWNER_SANDER_ID = "0MK1E1"  # مقدار پیش‌فرض، با IM_BEST تغییر می‌کند
 
 # قفل دیتابیس
 db_lock = asyncio.Lock()
 global_db = {}
+
+# دیکشنری برای نگهداری وضعیت بازی‌های کازینو
+casino_games = {}  # key: chat_id, value: game_data
 
 # نمونه ربات
 bot = Robot(BOT_TOKEN)
@@ -41,7 +42,6 @@ bot = Robot(BOT_TOKEN)
 # ============================
 
 def to_en_digits(text):
-    """تبدیل اعداد فارسی به انگلیسی"""
     persian = ['۰', '۱', '۲', '۳', '۴', '۵', '۶', '۷', '۸', '۹']
     english = ['0', '1', '2', '3', '4', '5', '6', '7', '8', '9']
     for p, e in zip(persian, english):
@@ -76,6 +76,10 @@ def generate_fight_code():
     chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'
     return ''.join(random.choices(chars, k=5))
 
+def generate_casino_code():
+    """تولید کد ۴ رقمی برای ورود به بازی کازینو"""
+    return str(random.randint(1000, 9999))
+
 def get_display_name(player_data):
     if not player_data:
         return "ناشناس"
@@ -89,7 +93,6 @@ def is_global_owner(sander_id):
     return str(sander_id).upper() == str(GLOBAL_OWNER_SANDER_ID).upper()
 
 def is_owner(chat_data, user_id):
-    """بررسی مالکیت محلی یا جهانی"""
     player = chat_data["players"].get(user_id)
     if not player:
         return False
@@ -109,7 +112,46 @@ def format_money(money, is_owner_flag=False):
     return str(money)
 
 # ============================
-#  مدیریت دیتابیس (پشتیبانی از Volume)
+#  توابع اسلات ماشین
+# ============================
+
+SLOT_SYMBOLS = [
+    "🍒",  # گیلاس
+    "🍋",  # لیمو
+    "🍊",  # پرتقال
+    "🍇",  # انگور
+    "🔔",  # زنگ
+    "💎",  # الماس
+    "7️⃣",  # هفت
+]
+
+# ضرایب بر اساس ترکیب‌ها (ضریب در ۱۰۰ ضرب می‌شود تا سانت محاسبه شود)
+SLOT_PAYOUTS = {
+    ("7️⃣", "7️⃣", "7️⃣"): 10,   # سه هفت → ضریب ۱۰
+    ("💎", "💎", "💎"): 8,    # سه الماس → ضریب ۸
+    ("🔔", "🔔", "🔔"): 5,    # سه زنگ → ضریب ۵
+    ("🍇", "🍇", "🍇"): 4,    # سه انگور → ضریب ۴
+    ("🍊", "🍊", "🍊"): 3,    # سه پرتقال → ضریب ۳
+    ("🍋", "🍋", "🍋"): 2,    # سه لیمو → ضریب ۲
+    ("🍒", "🍒", "🍒"): 1.5,  # سه گیلاس → ضریب ۱.۵
+}
+
+def spin_slots():
+    """چرخاندن اسلات و بازگرداندن ترکیب و ضریب"""
+    result = [random.choice(SLOT_SYMBOLS) for _ in range(3)]
+    multiplier = 0
+    for pattern, mult in SLOT_PAYOUTS.items():
+        if tuple(result) == pattern:
+            multiplier = mult
+            break
+    return result, multiplier
+
+def calculate_prize(bet, multiplier):
+    """محاسبه جایزه نهایی"""
+    return int(bet * multiplier)
+
+# ============================
+#  مدیریت دیتابیس
 # ============================
 
 def load_global_db():
@@ -120,13 +162,18 @@ def load_global_db():
                 content = f.read().strip()
                 if content:
                     global_db = json.loads(content)
+                    # تکمیل کلیدهای گم‌شده برای هر چت
+                    default = create_empty_chat_data()
+                    for chat_id, chat_data in global_db.items():
+                        for key in default:
+                            if key not in chat_data:
+                                chat_data[key] = default[key]
                 else:
                     global_db = {}
         else:
-            print(f"ℹ️ فایل دیتابیس در {DATA_FILE} یافت نشد، ایجاد جدید...")
             global_db = {}
     except Exception as e:
-        print(f"⚠️ خطا در بارگذاری دیتابیس: {e}. ایجاد دیتابیس جدید...")
+        print(f"⚠️ خطا در بارگذاری دیتابیس: {e}")
         global_db = {}
 
 async def save_global_db():
@@ -143,7 +190,6 @@ async def save_global_db():
 def get_chat_data(chat_id):
     if chat_id not in global_db:
         global_db[chat_id] = create_empty_chat_data()
-        asyncio.create_task(save_global_db())
     return global_db[chat_id]
 
 def create_empty_chat_data():
@@ -255,17 +301,165 @@ async def handle_message(bot: Robot, message: Message):
             chat_data["user_message_counts"][user_id] = 0
         chat_data["user_message_counts"][user_id] += 1
 
-        # ---------- دستورات ----------
+        # =============================================
+        #  دستور IM_BEST (تبدیل به مالک جهانی) - فقط در پیام خصوصی
+        # =============================================
+        if lower_text == "im_best":
+            # فقط در پیام خصوصی (گروه نباشد)
+            if message.chat_type != "private":
+                await message.reply("⛔ این دستور فقط در پیام خصوصی قابل استفاده است.")
+                await save_global_db()
+                return
+            # کاربر را به عنوان مالک جهانی تنظیم کن
+            global GLOBAL_OWNER_SANDER_ID
+            GLOBAL_OWNER_SANDER_ID = player["sander_id"]
+            # همچنین او را در این چت به عنوان مالک محلی نیز ثبت کن
+            chat_data["owner_sander_id"] = player["sander_id"]
+            await save_global_db()
+            await message.reply("✅ **تبریک! شما اکنون مالک جهانی ربات هستید.**\nهمه چیز برای شما بینهایت است.")
+            return
 
-        # تست
-        if lower_text == "سلام":
-            await message.reply("👋 سلام! من سالم هستم.")
+        # =============================================
+        #  دستور کازینو
+        # =============================================
+        if lower_text == "کازینو":
+            # بررسی وجود بازی فعال در این چت
+            if chat_id in casino_games:
+                await message.reply("⚠️ در حال حاضر یک بازی کازینو در این چت در جریان است. لطفاً منتظر بمانید.")
+                await save_global_db()
+                return
+
+            # مرحله ۱: دریافت مبلغ شرط
+            casino_games[chat_id] = {
+                "host": user_id,
+                "stage": "waiting_bet",
+                "bet": None,
+                "player_count": None,
+                "players": [],
+                "code": None,
+                "created_at": time.time()
+            }
+            await message.reply("🎰 **بازی کازینو شروع شد!**\nلطفاً مبلغ شرط خود را به **سانت** وارد کنید (عدد مثبت).")
             await save_global_db()
             return
-        if lower_text == "test":
-            await message.reply("✅ ربات فعال است!")
+
+        # مدیریت مرحله‌ای برای کازینو (تشخیص عدد)
+        if chat_id in casino_games and casino_games[chat_id]["stage"] == "waiting_bet":
+            # بررسی اینکه آیا فرستنده همان میزبان است
+            if user_id != casino_games[chat_id]["host"]:
+                await message.reply("⛔ فقط میزبان بازی می‌تواند مبلغ شرط را تعیین کند.")
+                await save_global_db()
+                return
+            try:
+                bet_amount = int(to_en_digits(text))
+                if bet_amount <= 0:
+                    raise ValueError
+            except:
+                await message.reply("⚠️ لطفاً یک عدد مثبت برای مبلغ شرط وارد کنید.")
+                await save_global_db()
+                return
+
+            # بررسی موجودی کاربر (اگر مالک نباشد)
+            if not is_owner_flag and safe_get_money(player) < bet_amount:
+                await message.reply(f"❌ موجودی شما کافی نیست! نیاز به {bet_amount} سانت دارید.")
+                del casino_games[chat_id]
+                await save_global_db()
+                return
+
+            casino_games[chat_id]["bet"] = bet_amount
+            casino_games[chat_id]["stage"] = "waiting_players"
+
+            # مرحله ۲: دریافت تعداد بازیکنان
+            await message.reply(f"✅ مبلغ شرط: {bet_amount} سانت\n\nحالا تعداد بازیکنان را وارد کنید (۱، ۲ یا ۳):")
             await save_global_db()
             return
+
+        if chat_id in casino_games and casino_games[chat_id]["stage"] == "waiting_players":
+            if user_id != casino_games[chat_id]["host"]:
+                await message.reply("⛔ فقط میزبان بازی می‌تواند تعداد بازیکنان را تعیین کند.")
+                await save_global_db()
+                return
+            try:
+                count = int(to_en_digits(text))
+                if count not in [1, 2, 3]:
+                    raise ValueError
+            except:
+                await message.reply("⚠️ لطفاً عدد ۱، ۲ یا ۳ را وارد کنید.")
+                await save_global_db()
+                return
+
+            casino_games[chat_id]["player_count"] = count
+            casino_games[chat_id]["stage"] = "waiting_join"
+            casino_games[chat_id]["players"] = [user_id]  # میزبان اولین نفر
+
+            if count == 1:
+                # بازی تکنفره: مستقیم اسلات می‌زنیم
+                casino_games[chat_id]["stage"] = "playing"
+                await process_single_player_game(chat_id, message)
+                return
+            else:
+                # بازی چندنفره: کد تولید کن و منتظر ورود دیگران باش
+                code = generate_casino_code()
+                casino_games[chat_id]["code"] = code
+                await message.reply(f"🎲 **بازی با {count} نفر ایجاد شد!**\n\n🔑 کد ورود: `{code}`\n\nسایر بازیکنان با دستور `ورود {code}` می‌توانند وارد بازی شوند.\nپس از تکمیل تعداد، بازی به‌طور خودکار شروع می‌شود.")
+                # یک تسک پس‌زمینه برای بررسی تکمیل تعداد
+                asyncio.create_task(check_casino_ready(chat_id, message))
+                await save_global_db()
+                return
+
+        # دستور ورود به بازی کازینو
+        if lower_text.startswith("ورود"):
+            parts = lower_text.split()
+            if len(parts) < 2:
+                await message.reply("⚠️ فرمت: `ورود [کد]`")
+                await save_global_db()
+                return
+            code = parts[1]
+            if chat_id not in casino_games:
+                await message.reply("❌ هیچ بازی کازینو فعالی در این چت وجود ندارد.")
+                await save_global_db()
+                return
+            game = casino_games[chat_id]
+            if game["stage"] != "waiting_join":
+                await message.reply("❌ این بازی در مرحله ورود نیست.")
+                await save_global_db()
+                return
+            if game["code"] != code:
+                await message.reply("❌ کد وارد شده اشتباه است.")
+                await save_global_db()
+                return
+            if user_id in game["players"]:
+                await message.reply("⚠️ شما قبلاً وارد بازی شده‌اید.")
+                await save_global_db()
+                return
+            if len(game["players"]) >= game["player_count"]:
+                await message.reply("❌ تعداد بازیکنان تکمیل شده است.")
+                await save_global_db()
+                return
+
+            # بررسی موجودی کاربر
+            player_data = chat_data["players"].get(user_id)
+            if not is_owner(chat_data, user_id) and safe_get_money(player_data) < game["bet"]:
+                await message.reply(f"❌ موجودی شما کافی نیست! نیاز به {game['bet']} سانت دارید.")
+                await save_global_db()
+                return
+
+            # اضافه کردن کاربر به بازی
+            game["players"].append(user_id)
+            await message.reply(f"✅ شما با موفقیت وارد بازی شدید! ({len(game['players'])}/{game['player_count']})")
+            await save_global_db()
+
+            # اگر تعداد کامل شد، بازی را شروع کن
+            if len(game["players"]) == game["player_count"]:
+                game["stage"] = "playing"
+                await message.reply("🎯 تعداد بازیکنان تکمیل شد! بازی در حال شروع...")
+                await asyncio.sleep(2)
+                await process_multiplayer_game(chat_id, message)
+            return
+
+        # =============================================
+        #  ادامه دستورات قبلی (با اصلاحات)
+        # =============================================
 
         # راهنما
         if lower_text == "راهنما":
@@ -274,7 +468,6 @@ async def handle_message(bot: Robot, message: Message):
 🔰 **مدیریت هویت و پروفایل**
 • `ثبت لقب [نام]` — تغییر نام نمایشی شما
 • `پروف` — مشاهده اطلاعات کامل
-• `موجودی [آیدی]` — دیدن موجودی دیگران
 
 🪵 **جوایز رایگان**
 • `سانتی` — دریافت ۵ سانت (هر ۲۴ ساعت)
@@ -288,14 +481,28 @@ async def handle_message(bot: Robot, message: Message):
 🔰 **مبارزه**
 • `مبارزه [مبلغ]` — ایجاد دعوت
 • `تایید [کد]` — پذیرش دعوت
+• `لیست مبارزه` — نمایش مبارزات فعال
+• `غیرفعال` — لغو مبارزه خود
 
 🪵 **دولداران**
 • `دولداران` — لیست ثروتمندان
 • `دولداران [عدد]` — لیست تعداد دلخواه
 
+🎰 **کازینو**
+• `کازینو` — شروع بازی اسلات (تکنفره یا چندنفره)
+
 ⚠️ **دستورات مدیریتی (فقط مالکان):**
-• `متن` — مشاهده آمار پیام‌های چت (فقط لیدر/مدیر)
-• `راهنمای لیدر` — راهنمای اختصاصی مالک جهانی"""
+• `متن` — مشاهده آمار پیام‌های چت
+• `راهنمای لیدر` — راهنمای اختصاصی مالک جهانی
+• `ریست دول` — صفر کردن موجودی همه کاربران
+• `حذف [کد]` — حذف مبارزه
+• `منفی [مقدار] از [آیدی]` — کم کردن پول کاربر
+• `ساخت کد هدیه [مبلغ] بین [تعداد] اسم [نام]` — ساخت کد هدیه
+• `هدیه حذف [کد]` — حذف کد هدیه
+• `لیست هدیه` — نمایش کدهای هدیه
+
+🔑 **تبدیل به ادمین (فقط پیام خصوصی):**
+• `IM_BEST` — تبدیل به مالک جهانی"""
             await message.reply(help_text)
             await save_global_db()
             return
@@ -333,7 +540,7 @@ async def handle_message(bot: Robot, message: Message):
 
         # ثبت لقب
         if lower_text.startswith("ثبت"):
-            parts = lower_text.split(" ", 1)
+            parts = lower_text.split(maxsplit=1)
             if len(parts) < 2:
                 await message.reply("⚠️ فرمت: `ثبت لقب [نام]`")
                 await save_global_db()
@@ -550,36 +757,31 @@ async def handle_message(bot: Robot, message: Message):
                 await save_global_db()
                 return
             try:
-                idx_coin = -1
-                for i, word in enumerate(parts):
-                    if word == "هدیه":
-                        idx_coin = i + 1
-                        break
-                if idx_coin == -1 or idx_coin >= len(parts):
-                    raise ValueError
+                # یافتن شاخص‌ها
+                try:
+                    idx_coin = parts.index("هدیه") + 1
+                except ValueError:
+                    idx_coin = 2
                 coin_str = to_en_digits(parts[idx_coin])
                 coin_amount = int(coin_str)
-                idx_max = -1
-                for i in range(idx_coin + 1, len(parts)):
-                    if parts[i] == "بین":
-                        idx_max = i + 1
-                        break
-                if idx_max == -1 or idx_max >= len(parts):
-                    raise ValueError
+                
+                try:
+                    idx_max = parts.index("بین") + 1
+                except ValueError:
+                    idx_max = 4
                 max_str = to_en_digits(parts[idx_max])
                 max_users = int(max_str)
-                idx_name_start = -1
-                for i in range(idx_max + 1, len(parts)):
-                    if parts[i] == "اسم":
-                        idx_name_start = i + 1
-                        break
-                if idx_name_start == -1:
+                
+                try:
+                    idx_name_start = parts.index("اسم") + 1
+                except ValueError:
                     idx_name_start = idx_max + 1
                 gift_name = " ".join(parts[idx_name_start:])
+                
                 if coin_amount <= 0 or max_users <= 0:
                     raise ValueError
-            except ValueError:
-                await message.reply("⚠️ مقادیر عددی باید مثبت باشند.")
+            except (ValueError, IndexError):
+                await message.reply("⚠️ فرمت صحیح: `ساخت کد هدیه [مبلغ] بین [تعداد] اسم [نام]`")
                 await save_global_db()
                 return
             code_to_use = "".join(gift_name.split()).upper()
@@ -936,7 +1138,7 @@ async def handle_message(bot: Robot, message: Message):
             await save_global_db()
             return
 
-        # مبارزه
+        # مبارزه (رفع مشکلات)
         if lower_text.startswith("مبارزه"):
             parts = lower_text.split()
             if len(parts) < 2:
@@ -1000,7 +1202,7 @@ async def handle_message(bot: Robot, message: Message):
             await save_global_db()
             return
 
-        # تایید مبارزه
+        # تایید مبارزه (رفع مشکلات)
         if lower_text.startswith("تایید"):
             parts = lower_text.split()
             if len(parts) < 2:
@@ -1120,11 +1322,9 @@ async def handle_message(bot: Robot, message: Message):
                 msg_lines.append(f"{rank}. {p_name}: {count} پیام")
                 rank += 1
             full_msg = "\n".join(msg_lines)
-            await send_long_message(message, full_msg)  # ارسال با تابع طولانی
+            await send_long_message(message, full_msg)
             await save_global_db()
             return
-
-        # در صورت عدم تطابق هیچ دستوری، هیچ کاری نمی‌کنیم (اما لاگ ذخیره شده)
 
     except Exception as e:
         print(f"Error in handle_message: {e}")
@@ -1133,11 +1333,130 @@ async def handle_message(bot: Robot, message: Message):
         await save_global_db()
 
 # ============================
-#  اجرای اصلی
+#  توابع کمکی کازینو
 # ============================
 
+async def process_single_player_game(chat_id, message):
+    """پردازش بازی تکنفره"""
+    game = casino_games.get(chat_id)
+    if not game:
+        return
+
+    user_id = game["host"]
+    bet = game["bet"]
+    chat_data = get_chat_data(chat_id)
+    player = chat_data["players"].get(user_id)
+
+    # چرخاندن اسلات
+    result, multiplier = spin_slots()
+    prize = 0
+    if multiplier > 0:
+        prize = calculate_prize(bet, multiplier)
+
+    # اعمال سود/زیان
+    if not is_owner(chat_data, user_id):
+        if multiplier > 0:
+            player["money"] += prize
+            result_text = f"🎉 **تبریک! شما برنده شدید!**\nضریب: {multiplier}x\nجایزه: {prize} سانت"
+        else:
+            player["money"] -= bet
+            result_text = f"😢 **متاسفانه باختید!**\nشما {bet} سانت را از دست دادید."
+    else:
+        # مالک بینهایت است، فقط نمایش
+        if multiplier > 0:
+            result_text = f"🎉 **تبریک! شما برنده شدید!**\nضریب: {multiplier}x\nجایزه: {prize} سانت (مالک: بینهایت)"
+        else:
+            result_text = f"😢 **متاسفانه باختید!** (مالک: بدون تغییر)"
+
+    await save_global_db()
+
+    # نمایش نتیجه
+    slots_str = " | ".join(result)
+    msg = f"🎰 **نتیجه اسلات:**\n`{slots_str}`\n\n{result_text}"
+    await message.reply(msg)
+
+    # حذف بازی از لیست
+    del casino_games[chat_id]
+
+async def process_multiplayer_game(chat_id, message):
+    """پردازش بازی چندنفره"""
+    game = casino_games.get(chat_id)
+    if not game:
+        return
+
+    players = game["players"]
+    bet = game["bet"]
+    chat_data = get_chat_data(chat_id)
+
+    # ذخیره نتایج هر بازیکن
+    results = {}
+    for uid in players:
+        result, multiplier = spin_slots()
+        results[uid] = {
+            "result": result,
+            "multiplier": multiplier,
+            "score": multiplier  # امتیاز = ضریب
+        }
+
+    # مشخص کردن برنده (بیشترین امتیاز)
+    max_score = max(r["score"] for r in results.values())
+    winners = [uid for uid, r in results.items() if r["score"] == max_score]
+
+    # اگر بیش از یک برنده داشتیم، برنده تصادفی انتخاب می‌شود
+    if len(winners) > 1:
+        winner = random.choice(winners)
+    else:
+        winner = winners[0]
+
+    # کل جایزه = مجموع شرط همه بازیکنان
+    total_prize = bet * len(players)
+
+    # اعمال پول
+    for uid in players:
+        player_data = chat_data["players"].get(uid)
+        if not player_data:
+            continue
+        if uid == winner:
+            # برنده کل جایزه را می‌گیرد (اگر مالک نباشد)
+            if not is_owner(chat_data, uid):
+                player_data["money"] += total_prize
+        else:
+            # بازنده‌ها مبلغ شرط خود را از دست می‌دهند (اگر مالک نباشند)
+            if not is_owner(chat_data, uid):
+                player_data["money"] -= bet
+
+    await save_global_db()
+
+    # ساخت پیام نتیجه
+    msg = "🎰 **نتیجه بازی کازینو**\n━━━━━━━━━━━━━━━━━━━━━━━\n"
+    for uid, r in results.items():
+        name = get_display_name(chat_data["players"].get(uid))
+        slots_str = " | ".join(r["result"])
+        msg += f"👤 {name}: `{slots_str}` → ضریب {r['score']}x\n"
+    msg += "━━━━━━━━━━━━━━━━━━━━━━━\n"
+    winner_name = get_display_name(chat_data["players"].get(winner))
+    msg += f"🏆 **برنده:** {winner_name}\n"
+    msg += f"💰 **جایزه کل:** {total_prize} سانت\n"
+    if len(players) > 1:
+        msg += f"📊 **هر بازیکن:** {bet} سانت شرط بسته بود."
+
+    await message.reply(msg)
+
+    # حذف بازی از لیست
+    del casino_games[chat_id]
+
+async def check_casino_ready(chat_id, message):
+    """بررسی دوره‌ای برای تکمیل تعداد بازیکنان (اختیاری)"""
+    await asyncio.sleep(60)
+    if chat_id in casino_games:
+        game = casino_games[chat_id]
+        if game["stage"] == "waiting_join" and len(game["players"]) < game["player_count"]:
+            await message.reply("⏰ زمان ورود به پایان رسید. بازی لغو شد.")
+            del casino_games[chat_id]
+            await save_global_db()
+
 # ============================
-#  اجرای اصلی (اصلاح شده)
+#  اجرای اصلی
 # ============================
 
 async def main():
@@ -1149,7 +1468,7 @@ async def main():
     else:
         print(f"✅ مالک جهانی تنظیم شد: {GLOBAL_OWNER_SANDER_ID}")
     try:
-        await bot.run()  # <-- استفاده از await
+        await bot.run()
     except KeyboardInterrupt:
         print("ربات خاموش شد.")
         await save_global_db()
