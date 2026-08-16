@@ -4,7 +4,9 @@ import time
 import random
 import os
 import traceback
+import threading
 from rubka import Robot, Message, filters
+from flask import Flask, render_template_string, jsonify
 
 # ============================
 #  تنظیمات اولیه
@@ -31,6 +33,248 @@ global_db = {}
 casino_games = {}
 
 bot = Robot(BOT_TOKEN)
+
+# ============================
+#  Flask Web Panel (مدیریت)
+# ============================
+app = Flask(__name__)
+
+# HTML قالب پنل مدیریت (طراحی مدرن و خفن)
+HTML_TEMPLATE = """
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>پنل مدیریت ربات سانتی</title>
+    <link href="https://fonts.googleapis.com/css2?family=Vazir&display=swap" rel="stylesheet">
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            font-family: 'Vazir', Tahoma, sans-serif;
+            background: #0d0d1a;
+            color: #e0e0e0;
+            padding: 20px;
+        }
+        .container {
+            max-width: 1300px;
+            margin: auto;
+        }
+        .header {
+            text-align: center;
+            padding: 30px 0;
+            border-bottom: 2px solid #2a2a4a;
+        }
+        .header h1 {
+            font-size: 36px;
+            background: linear-gradient(135deg, #f7971e, #ffd200);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+        .header p {
+            color: #888;
+            font-size: 14px;
+        }
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 20px;
+            margin: 30px 0;
+        }
+        .stat-card {
+            background: #1a1a2e;
+            padding: 20px;
+            border-radius: 16px;
+            text-align: center;
+            border: 1px solid #2a2a4a;
+            transition: transform 0.2s;
+        }
+        .stat-card:hover {
+            transform: translateY(-5px);
+            border-color: #f7971e;
+        }
+        .stat-card .number {
+            font-size: 32px;
+            font-weight: bold;
+            color: #ffd200;
+        }
+        .stat-card .label {
+            font-size: 14px;
+            color: #aaa;
+            margin-top: 5px;
+        }
+        .section {
+            background: #141428;
+            border-radius: 16px;
+            padding: 20px;
+            margin: 30px 0;
+            border: 1px solid #2a2a4a;
+        }
+        .section h2 {
+            color: #ffd200;
+            font-size: 22px;
+            margin-bottom: 15px;
+            border-right: 4px solid #f7971e;
+            padding-right: 12px;
+        }
+        .table-wrap {
+            overflow-x: auto;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 14px;
+        }
+        th {
+            background: #1e1e3a;
+            color: #ffd200;
+            padding: 12px 10px;
+            text-align: right;
+            border-bottom: 2px solid #2a2a4a;
+        }
+        td {
+            padding: 10px;
+            border-bottom: 1px solid #222244;
+        }
+        tr:hover td {
+            background: #1a1a30;
+        }
+        code {
+            background: #0d0d1a;
+            padding: 2px 8px;
+            border-radius: 6px;
+            font-size: 12px;
+            color: #ffd200;
+        }
+        .badge {
+            background: #f7971e;
+            color: #0d0d1a;
+            padding: 2px 12px;
+            border-radius: 20px;
+            font-size: 12px;
+            font-weight: bold;
+        }
+        .refresh-note {
+            text-align: center;
+            color: #666;
+            font-size: 13px;
+            margin-top: 20px;
+        }
+        @media (max-width: 600px) {
+            .header h1 { font-size: 24px; }
+            .stat-card .number { font-size: 24px; }
+        }
+    </style>
+</head>
+<body>
+<div class="container">
+    <div class="header">
+        <h1>🤖 پنل مدیریت ربات سانتی</h1>
+        <p>داشبورد لحظه‌ای | داده‌ها هر ۳۰ ثانیه به‌روز می‌شوند</p>
+    </div>
+
+    <div class="stats-grid" id="stats">
+        <div class="stat-card"><div class="number" id="totalPlayers">-</div><div class="label">👤 کل کاربران</div></div>
+        <div class="stat-card"><div class="number" id="totalChats">-</div><div class="label">💬 چت‌های فعال</div></div>
+        <div class="stat-card"><div class="number" id="totalFights">-</div><div class="label">⚔️ مبارزات فعال</div></div>
+        <div class="stat-card"><div class="number" id="totalGifts">-</div><div class="label">🎁 کدهای هدیه</div></div>
+    </div>
+
+    <div class="section">
+        <h2>📋 لیست کاربران</h2>
+        <div class="table-wrap" id="playersTable">در حال بارگذاری...</div>
+    </div>
+
+    <div class="section">
+        <h2>📊 اطلاعات چت‌ها</h2>
+        <div class="table-wrap" id="chatsTable">در حال بارگذاری...</div>
+    </div>
+
+    <div class="refresh-note">🔄 داده‌ها به‌طور خودکار به‌روز می‌شوند</div>
+</div>
+
+<script>
+    async function fetchData() {
+        try {
+            const res = await fetch('/api/data');
+            const data = await res.json();
+
+            document.getElementById('totalPlayers').textContent = data.total_players || 0;
+            document.getElementById('totalChats').textContent = data.total_chats || 0;
+            document.getElementById('totalFights').textContent = data.total_fights || 0;
+            document.getElementById('totalGifts').textContent = data.total_gifts || 0;
+
+            // جدول کاربران
+            let playersHtml = `<table><tr><th>شناسه</th><th>Sander ID</th><th>لقب</th></tr>`;
+            for (const [uid, info] of Object.entries(data.players || {})) {
+                playersHtml += `<tr><td><code>${uid}</code></td><td><code>${info.sander_id || 'ندارد'}</code></td><td>${info.nickname || 'بدون لقب'}</td></tr>`;
+            }
+            playersHtml += '</table>';
+            document.getElementById('playersTable').innerHTML = playersHtml;
+
+            // جدول چت‌ها
+            let chatsHtml = `<table><tr><th>شناسه چت</th><th>بازیکنان</th><th>مبارزات</th><th>هدیه‌ها</th></tr>`;
+            for (const [cid, info] of Object.entries(data.chats || {})) {
+                chatsHtml += `<tr><td><code>${cid}</code></td><td>${info.players}</td><td>${info.fights}</td><td>${info.gifts}</td></tr>`;
+            }
+            chatsHtml += '</table>';
+            document.getElementById('chatsTable').innerHTML = chatsHtml;
+
+        } catch (e) {
+            document.getElementById('playersTable').innerHTML = '<p style="color:red;">خطا در بارگذاری</p>';
+            document.getElementById('chatsTable').innerHTML = '<p style="color:red;">خطا در بارگذاری</p>';
+        }
+    }
+    fetchData();
+    setInterval(fetchData, 30000);
+</script>
+</body>
+</html>
+"""
+
+@app.route('/')
+def index():
+    return render_template_string(HTML_TEMPLATE)
+
+@app.route('/api/data')
+def api_data():
+    try:
+        with open(DATA_FILE, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+    except:
+        data = {"global_players": {}}
+    
+    players = data.get("global_players", {})
+    total_fights = 0
+    total_gifts = 0
+    chats = {}
+    for chat_id, chat in data.items():
+        if chat_id == "global_players":
+            continue
+        chats[chat_id] = {
+            "players": len(chat.get("players", {})),
+            "fights": len(chat.get("fights", {})),
+            "gifts": len(chat.get("gift_codes", []))
+        }
+        total_fights += len(chat.get("fights", {}))
+        total_gifts += len(chat.get("gift_codes", []))
+    
+    return jsonify({
+        "total_players": len(players),
+        "total_chats": len(chats),
+        "total_fights": total_fights,
+        "total_gifts": total_gifts,
+        "players": players,
+        "chats": chats
+    })
+
+def start_web_panel():
+    """راه‌اندازی Flask در یک ترد جداگانه"""
+    app.run(host='0.0.0.0', port=5000, debug=False, use_reloader=False)
 
 # ============================
 #  توابع کمکی
@@ -117,7 +361,7 @@ def format_money(money, is_owner_flag=False):
     return str(money)
 
 # ============================
-#  توابع اسلات (با احتمال ۸۰٪ برد)
+#  اسلات (گردونه با شانس پوچ کمتر)
 # ============================
 
 def spin_slots():
@@ -412,10 +656,8 @@ async def handle_message(bot: Robot, message: Message):
         chat_data["user_message_counts"][user_id] += 1
 
         # =============================================
-        #  دستورات عمومی (ابتدا همه را بررسی کن)
+        #  IM_BEST (فقط پیام خصوصی)
         # =============================================
-
-        # IM_BEST (فقط پیام خصوصی)
         if lower_text == "im_best":
             if message.chat_type != "private":
                 await message.reply("⛔ این دستور فقط در پیام خصوصی قابل استفاده است.")
@@ -433,7 +675,9 @@ async def handle_message(bot: Robot, message: Message):
             await message.reply("✅ **تبریک! شما اکنون مالک جهانی ربات هستید.**")
             return
 
-        # راهنما
+        # =============================================
+        #  راهنما
+        # =============================================
         if lower_text == "راهنما":
             help_text = """💠 **راهنمای جامع ربات سانتی** 💠
 
@@ -477,7 +721,9 @@ async def handle_message(bot: Robot, message: Message):
             await save_global_db()
             return
 
-        # راهنمای لیدر
+        # =============================================
+        #  راهنمای لیدر
+        # =============================================
         if lower_text == "راهنمای لیدر":
             sander = get_sander_id(user_id)
             if not sander or not is_global_owner(sander):
@@ -507,7 +753,9 @@ async def handle_message(bot: Robot, message: Message):
             await save_global_db()
             return
 
-        # ثبت لقب
+        # =============================================
+        #  ثبت لقب
+        # =============================================
         if lower_text.startswith("ثبت"):
             parts = lower_text.split(maxsplit=1)
             if len(parts) < 2:
@@ -528,7 +776,9 @@ async def handle_message(bot: Robot, message: Message):
             await message.reply(f"✅ **لقب جدید (سراسری):** `{new_nickname}`")
             return
 
-        # دستورات مدیریت جهانی
+        # =============================================
+        #  دستورات مدیریت جهانی
+        # =============================================
         if lower_text == "global_help":
             sander = get_sander_id(user_id)
             is_gm = is_global_owner(sander) if sander else False
@@ -626,7 +876,9 @@ async def handle_message(bot: Robot, message: Message):
             await message.reply("✅ **مالکیت محلی لغو شد.**")
             return
 
-        # سایر دستورات مالک (خلاصه)
+        # =============================================
+        #  سایر دستورات مالک
+        # =============================================
         if lower_text == "ریست دول":
             if not is_owner_flag:
                 await message.reply("⛔ شما مالک نیستید!")
@@ -829,7 +1081,9 @@ async def handle_message(bot: Robot, message: Message):
             await save_global_db()
             return
 
-        # جوایز رایگان
+        # =============================================
+        #  جوایز رایگان
+        # =============================================
         if lower_text == "سانتی":
             now = time.time()
             global_time = chat_data.get("global_sanati_time", 0)
@@ -871,6 +1125,7 @@ async def handle_message(bot: Robot, message: Message):
 قبل: {before_money} | بعد: {after_money}""")
             return
 
+        # گردونه با شانس پوچ کمتر (۲۵٪)
         if lower_text == "گردونه":
             now = time.time()
             last_spin = player.get("last_spin_time", 0)
@@ -879,7 +1134,8 @@ async def handle_message(bot: Robot, message: Message):
                 await message.reply(f"⏳ زمان باقی‌مانده: {format_time(remaining)}")
                 await save_global_db()
                 return
-            weights = [("پوچ", 40), ("پوچ", 30), (5, 10), (10, 8), (13, 6), (20, 4), (500, 2)]
+            # شانس پوچ: ۲۵٪ (وزن‌های ۱۵ و ۱۰ به‌جای ۴۰ و ۳۰)
+            weights = [("پوچ", 15), ("پوچ", 10), (5, 15), (10, 12), (13, 10), (20, 8), (50, 5), (100, 3), (500, 2)]
             total_weight = sum(w for _, w in weights)
             rand_val = random.uniform(0, total_weight)
             current = 0
@@ -896,7 +1152,7 @@ async def handle_message(bot: Robot, message: Message):
                 player["last_spin_time"] = now
                 await save_global_db()
                 await message.reply(f"""🎡 **نتیجه گردونه!**
-🎁 جایزه: {result}
+🎁 جایزه: {result} سانت
 قبل: {before_money} | بعد: {after_money}""")
             else:
                 player["last_spin_time"] = now
@@ -904,7 +1160,9 @@ async def handle_message(bot: Robot, message: Message):
                 await message.reply("😢 **پوچ!** دوباره تلاش کنید.")
             return
 
-        # انتقال پول
+        # =============================================
+        #  انتقال پول
+        # =============================================
         if lower_text.startswith("اهدای سانت"):
             parts = lower_text[len("اهدای سانت"):].strip().split()
             if len(parts) < 2:
@@ -967,7 +1225,9 @@ async def handle_message(bot: Robot, message: Message):
 گیرنده: {receiver_display}""")
             return
 
-        # هدیه
+        # =============================================
+        #  هدیه
+        # =============================================
         if lower_text.startswith("هدیه"):
             parts = lower_text.split()
             if len(parts) < 2:
@@ -1021,7 +1281,9 @@ async def handle_message(bot: Robot, message: Message):
 قبل: {before_money} | بعد: {player['money']}""")
             return
 
-        # دولداران
+        # =============================================
+        #  دولداران
+        # =============================================
         if lower_text.startswith("دولداران"):
             parts = lower_text.split()
             if len(parts) == 1:
@@ -1087,7 +1349,9 @@ async def handle_message(bot: Robot, message: Message):
             await save_global_db()
             return
 
-        # پروفایل
+        # =============================================
+        #  پروفایل
+        # =============================================
         if lower_text == "پروف":
             stats = player.get("stats", {})
             wins = stats.get('wins', 0)
@@ -1117,7 +1381,7 @@ async def handle_message(bot: Robot, message: Message):
             return
 
         # =============================================
-        #  مبارزه
+        #  مبارزه (با نمایش قطعی موجودی)
         # =============================================
         if lower_text.startswith("مبارزه"):
             parts = lower_text.split()
@@ -1157,14 +1421,19 @@ async def handle_message(bot: Robot, message: Message):
                 "is_requester_owner": is_requester_owner
             }
             await save_global_db()
+            # نمایش موجودی در پیام دعوت
             await message.reply(f"""🔥 **دعوت مبارزه ارسال شد!**
 ━━━━━━━━━━━━━━━━━━━━━━━
 💰 **شرط:** {bet} سانت
 🔑 **کد مبارزه:** `{code}`
+💰 **موجودی شما:** {format_money(safe_get_money(player), is_owner_flag)}
 ━━━━━━━━━━━━━━━━━━━━━━━
 هر کسی کد بالا را با دستور `تایید` وارد کند، حریف شما می‌شود.""")
             return
 
+        # =============================================
+        #  لیست مبارزه
+        # =============================================
         if lower_text == "لیست مبارزه":
             fights = []
             active_statuses = ["pending", "waiting_for_acceptance"]
@@ -1180,6 +1449,9 @@ async def handle_message(bot: Robot, message: Message):
             await save_global_db()
             return
 
+        # =============================================
+        #  تایید مبارزه
+        # =============================================
         if lower_text.startswith("تایید"):
             parts = lower_text.split()
             if len(parts) < 2:
@@ -1254,6 +1526,9 @@ async def handle_message(bot: Robot, message: Message):
             await save_global_db()
             return
 
+        # =============================================
+        #  لغو مبارزه
+        # =============================================
         if lower_text == "غیرفعال":
             cancelled = False
             for k, f in list(chat_data["fights"].items()):
@@ -1269,7 +1544,7 @@ async def handle_message(bot: Robot, message: Message):
             return
 
         # =============================================
-        #  آمار پیام‌ها (متن)
+        #  متن (آمار پیام‌ها)
         # =============================================
         if lower_text == "متن":
             if not is_owner_flag:
@@ -1304,19 +1579,20 @@ async def handle_message(bot: Robot, message: Message):
             return
 
         # =============================================
-        #  کازینو (شروع بازی)
+        #  کازینو (با لغو در صورت عدم ورود عدد)
         # =============================================
         if lower_text == "کازینو":
+            # اگر بازی در حال اجراست، فقط به کاربر جدید اطلاع بده
+            if chat_id in casino_games:
+                await message.reply("⚠️ در حال حاضر یک بازی کازینو در این چت در جریان است. لطفاً کمی صبر کنید.")
+                await save_global_db()
+                return
+
             last_casino = player.get("last_casino_time", 0)
             now = time.time()
             if now - last_casino < CASINO_COOLDOWN:
                 remaining = CASINO_COOLDOWN - (now - last_casino)
                 await message.reply(f"⏳ لطفاً {format_time(remaining)} صبر کنید تا دوباره کازینو بازی کنید.")
-                await save_global_db()
-                return
-
-            if chat_id in casino_games:
-                await message.reply("⚠️ در حال حاضر یک بازی کازینو در این چت در جریان است.")
                 await save_global_db()
                 return
 
@@ -1332,23 +1608,24 @@ async def handle_message(bot: Robot, message: Message):
                 "code": None,
                 "created_at": time.time()
             }
-            await message.reply("🎰 **بازی کازینو شروع شد!**\nلطفاً مبلغ شرط خود را به **سانت** وارد کنید (عدد مثبت).")
+            await message.reply("🎰 **بازی کازینو شروع شد!**\nلطفاً مبلغ شرط خود را به **سانت** وارد کنید (عدد مثبت).\n⏳ اگر عددی وارد نکنید، بازی کنسل می‌شود.")
+            # تسک برای لغو خودکار در صورت عدم ورود عدد
+            asyncio.create_task(auto_cancel_casino(chat_id, message))
             return
 
-        # =============================================
-        #  مدیریت مراحل کازینو (فقط میزبان)
-        # =============================================
-        # مرحله waiting_bet (فقط میزبان می‌تواند پاسخ دهد)
+        # مرحله waiting_bet (فقط میزبان)
         if chat_id in casino_games and casino_games[chat_id]["stage"] == "waiting_bet":
             if user_id != casino_games[chat_id]["host"]:
-                # به کاربران دیگر هیچ پیامی نمی‌دهیم
+                # به بقیه کاربران چیزی نمیگوییم
                 return
             try:
                 bet_amount = int(to_en_digits(text))
                 if bet_amount <= 0:
                     raise ValueError
             except:
-                await message.reply("⚠️ لطفاً یک عدد مثبت برای مبلغ شرط وارد کنید.")
+                # اگر عدد نامعتبر وارد کرد، بازی کنسل شود
+                await message.reply("❌ عدد نامعتبر! بازی لغو شد.")
+                del casino_games[chat_id]
                 await save_global_db()
                 return
 
@@ -1373,7 +1650,8 @@ async def handle_message(bot: Robot, message: Message):
                 if count not in [1, 2, 3]:
                     raise ValueError
             except:
-                await message.reply("⚠️ لطفاً عدد ۱، ۲ یا ۳ را وارد کنید.")
+                await message.reply("❌ عدد نامعتبر! بازی لغو شد.")
+                del casino_games[chat_id]
                 await save_global_db()
                 return
 
@@ -1393,9 +1671,7 @@ async def handle_message(bot: Robot, message: Message):
                 await save_global_db()
                 return
 
-        # =============================================
-        #  ورود به بازی کازینو (دستور جداگانه)
-        # =============================================
+        # ورود به بازی کازینو
         if lower_text.startswith("ورود"):
             parts = lower_text.split()
             if len(parts) < 2:
@@ -1451,8 +1727,6 @@ async def handle_message(bot: Robot, message: Message):
                 await process_multiplayer_game(chat_id, message)
             return
 
-        # در غیر این صورت، هیچ کاری نکنیم
-
     except Exception as e:
         print(f"Error in handle_message: {e}")
         traceback.print_exc()
@@ -1460,7 +1734,19 @@ async def handle_message(bot: Robot, message: Message):
         await save_global_db()
 
 # ============================
-#  اجرای اصلی
+#  تسک لغو خودکار کازینو
+# ============================
+
+async def auto_cancel_casino(chat_id, message):
+    """اگر کاربر ظرف ۶۰ ثانیه عدد وارد نکرد، بازی کنسل شود"""
+    await asyncio.sleep(60)
+    if chat_id in casino_games and casino_games[chat_id]["stage"] == "waiting_bet":
+        await message.reply("⏰ زمان وارد کردن عدد به پایان رسید. بازی لغو شد.")
+        del casino_games[chat_id]
+        await save_global_db()
+
+# ============================
+#  اجرای اصلی (ربات + پنل)
 # ============================
 
 async def main():
@@ -1468,6 +1754,12 @@ async def main():
     load_global_db()
     print(f"✅ دیتابیس از {DATA_FILE} بارگذاری شد.")
     print(f"✅ مالک جهانی: {GLOBAL_OWNER_SANDER_ID}")
+
+    # راه‌اندازی پنل مدیریت در ترد جداگانه
+    web_thread = threading.Thread(target=start_web_panel, daemon=True)
+    web_thread.start()
+    print("✅ پنل مدیریت در http://0.0.0.0:5000 راه‌اندازی شد.")
+
     try:
         await bot.run()
     except KeyboardInterrupt:
