@@ -6,7 +6,7 @@ import os
 import traceback
 import threading
 from rubka import Robot, Message, filters
-from flask import Flask, render_template_string, jsonify
+from flask import Flask, render_template_string, jsonify, request
 
 # ============================
 #  تنظیمات اولیه
@@ -31,15 +31,16 @@ GLOBAL_OWNER_SANDER_ID = "0MK1E1"
 db_lock = asyncio.Lock()
 global_db = {}
 casino_games = {}
+admin_logs = []
 
 bot = Robot(BOT_TOKEN)
 
 # ============================
-#  Flask Web Panel (مدیریت)
+#  Flask Web Panel (مدیریت کامل)
 # ============================
 app = Flask(__name__)
+app.secret_key = "admin_panel_secret_key_12345"
 
-# HTML قالب پنل مدیریت (طراحی مدرن و خفن)
 HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html lang="fa" dir="rtl">
@@ -49,192 +50,399 @@ HTML_TEMPLATE = """
     <title>پنل مدیریت ربات سانتی</title>
     <link href="https://fonts.googleapis.com/css2?family=Vazir&display=swap" rel="stylesheet">
     <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
-        body {
-            font-family: 'Vazir', Tahoma, sans-serif;
-            background: #0d0d1a;
-            color: #e0e0e0;
-            padding: 20px;
-        }
-        .container {
-            max-width: 1300px;
-            margin: auto;
-        }
-        .header {
-            text-align: center;
-            padding: 30px 0;
-            border-bottom: 2px solid #2a2a4a;
-        }
-        .header h1 {
-            font-size: 36px;
-            background: linear-gradient(135deg, #f7971e, #ffd200);
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
-        }
-        .header p {
-            color: #888;
-            font-size: 14px;
-        }
-        .stats-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-            gap: 20px;
-            margin: 30px 0;
-        }
-        .stat-card {
-            background: #1a1a2e;
-            padding: 20px;
-            border-radius: 16px;
-            text-align: center;
-            border: 1px solid #2a2a4a;
-            transition: transform 0.2s;
-        }
-        .stat-card:hover {
-            transform: translateY(-5px);
-            border-color: #f7971e;
-        }
-        .stat-card .number {
-            font-size: 32px;
-            font-weight: bold;
-            color: #ffd200;
-        }
-        .stat-card .label {
-            font-size: 14px;
-            color: #aaa;
-            margin-top: 5px;
-        }
-        .section {
-            background: #141428;
-            border-radius: 16px;
-            padding: 20px;
-            margin: 30px 0;
-            border: 1px solid #2a2a4a;
-        }
-        .section h2 {
-            color: #ffd200;
-            font-size: 22px;
-            margin-bottom: 15px;
-            border-right: 4px solid #f7971e;
-            padding-right: 12px;
-        }
-        .table-wrap {
-            overflow-x: auto;
-        }
-        table {
-            width: 100%;
-            border-collapse: collapse;
-            font-size: 14px;
-        }
-        th {
-            background: #1e1e3a;
-            color: #ffd200;
-            padding: 12px 10px;
-            text-align: right;
-            border-bottom: 2px solid #2a2a4a;
-        }
-        td {
-            padding: 10px;
-            border-bottom: 1px solid #222244;
-        }
-        tr:hover td {
-            background: #1a1a30;
-        }
-        code {
-            background: #0d0d1a;
-            padding: 2px 8px;
-            border-radius: 6px;
-            font-size: 12px;
-            color: #ffd200;
-        }
-        .badge {
-            background: #f7971e;
-            color: #0d0d1a;
-            padding: 2px 12px;
-            border-radius: 20px;
-            font-size: 12px;
-            font-weight: bold;
-        }
-        .refresh-note {
-            text-align: center;
-            color: #666;
-            font-size: 13px;
-            margin-top: 20px;
-        }
-        @media (max-width: 600px) {
-            .header h1 { font-size: 24px; }
-            .stat-card .number { font-size: 24px; }
-        }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: 'Vazir', Tahoma, sans-serif; background: #0d0d1a; color: #e0e0e0; padding: 20px; }
+        .container { max-width: 1400px; margin: auto; }
+        .header { display: flex; justify-content: space-between; align-items: center; padding: 20px 0; border-bottom: 2px solid #2a2a4a; flex-wrap: wrap; gap: 15px; }
+        .header h1 { font-size: 32px; background: linear-gradient(135deg, #f7971e, #ffd200); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+        .header .status { background: #1a1a2e; padding: 8px 20px; border-radius: 20px; border: 1px solid #2a2a4a; font-size: 14px; }
+        .header .status .online { color: #00ff88; }
+        .nav-tabs { display: flex; gap: 5px; margin: 20px 0; flex-wrap: wrap; background: #141428; padding: 8px; border-radius: 12px; }
+        .nav-tabs button { background: transparent; color: #aaa; border: none; padding: 10px 20px; border-radius: 8px; cursor: pointer; font-family: 'Vazir', Tahoma, sans-serif; font-size: 14px; transition: 0.2s; }
+        .nav-tabs button:hover { background: #1e1e3a; color: #fff; }
+        .nav-tabs button.active { background: #f7971e; color: #0d0d1a; font-weight: bold; }
+        .tab-content { display: none; background: #141428; border-radius: 16px; padding: 20px; border: 1px solid #2a2a4a; margin-top: 20px; }
+        .tab-content.active { display: block; }
+        .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 15px; margin-bottom: 25px; }
+        .stat-card { background: #1a1a2e; padding: 18px; border-radius: 12px; text-align: center; border: 1px solid #2a2a4a; transition: 0.2s; }
+        .stat-card:hover { border-color: #f7971e; transform: translateY(-3px); }
+        .stat-card .number { font-size: 28px; font-weight: bold; color: #ffd200; }
+        .stat-card .label { font-size: 13px; color: #aaa; margin-top: 5px; }
+        .search-box { display: flex; gap: 10px; margin-bottom: 20px; flex-wrap: wrap; }
+        .search-box input { flex: 1; min-width: 200px; padding: 10px 16px; border-radius: 10px; border: 1px solid #2a2a4a; background: #1a1a2e; color: #fff; font-family: 'Vazir', Tahoma, sans-serif; }
+        .search-box input:focus { outline: none; border-color: #f7971e; }
+        .search-box button { padding: 10px 24px; border-radius: 10px; border: none; background: #f7971e; color: #0d0d1a; font-weight: bold; cursor: pointer; font-family: 'Vazir', Tahoma, sans-serif; }
+        .search-box button:hover { background: #ffd200; }
+        .table-wrap { overflow-x: auto; }
+        table { width: 100%; border-collapse: collapse; font-size: 14px; }
+        th { background: #1e1e3a; color: #ffd200; padding: 12px 10px; text-align: right; border-bottom: 2px solid #2a2a4a; white-space: nowrap; }
+        td { padding: 10px; border-bottom: 1px solid #222244; vertical-align: middle; }
+        tr:hover td { background: #1a1a30; }
+        code { background: #0d0d1a; padding: 2px 8px; border-radius: 6px; font-size: 12px; color: #ffd200; }
+        .badge { padding: 2px 12px; border-radius: 20px; font-size: 12px; font-weight: bold; }
+        .badge-success { background: #00ff88; color: #0d0d1a; }
+        .badge-danger { background: #ff4444; color: #fff; }
+        .badge-warning { background: #ffaa00; color: #0d0d1a; }
+        .btn { padding: 6px 14px; border-radius: 8px; border: none; cursor: pointer; font-family: 'Vazir', Tahoma, sans-serif; font-size: 12px; font-weight: bold; transition: 0.2s; margin: 2px; }
+        .btn-primary { background: #f7971e; color: #0d0d1a; }
+        .btn-primary:hover { background: #ffd200; }
+        .btn-danger { background: #ff4444; color: #fff; }
+        .btn-danger:hover { background: #ff6666; }
+        .btn-success { background: #00cc88; color: #0d0d1a; }
+        .btn-success:hover { background: #00ff88; }
+        .btn-sm { padding: 4px 10px; font-size: 11px; }
+        .modal { display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.7); z-index: 1000; justify-content: center; align-items: center; }
+        .modal.active { display: flex; }
+        .modal-content { background: #1a1a2e; padding: 30px; border-radius: 16px; max-width: 500px; width: 90%; border: 1px solid #2a2a4a; }
+        .modal-content h3 { color: #ffd200; margin-bottom: 15px; }
+        .modal-content input, .modal-content select { width: 100%; padding: 10px; border-radius: 10px; border: 1px solid #2a2a4a; background: #0d0d1a; color: #fff; margin: 8px 0; font-family: 'Vazir', Tahoma, sans-serif; }
+        .modal-content input:focus { outline: none; border-color: #f7971e; }
+        .modal-buttons { display: flex; gap: 10px; margin-top: 15px; justify-content: flex-end; }
+        .toast { position: fixed; bottom: 30px; right: 30px; padding: 15px 25px; border-radius: 12px; color: #fff; font-weight: bold; z-index: 2000; animation: slideIn 0.3s ease; }
+        .toast-success { background: #00cc88; }
+        .toast-error { background: #ff4444; }
+        .toast-info { background: #f7971e; }
+        @keyframes slideIn { from { transform: translateX(100px); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
+        .empty-state { text-align: center; padding: 40px; color: #666; }
+        .refresh-btn { background: transparent; border: 1px solid #2a2a4a; color: #aaa; padding: 6px 16px; border-radius: 8px; cursor: pointer; font-family: 'Vazir', Tahoma, sans-serif; }
+        .refresh-btn:hover { background: #1e1e3a; color: #fff; }
+        @media (max-width: 600px) { .header h1 { font-size: 22px; } .nav-tabs button { padding: 6px 12px; font-size: 12px; } .stats-grid { grid-template-columns: repeat(2, 1fr); } }
     </style>
 </head>
 <body>
 <div class="container">
     <div class="header">
-        <h1>🤖 پنل مدیریت ربات سانتی</h1>
-        <p>داشبورد لحظه‌ای | داده‌ها هر ۳۰ ثانیه به‌روز می‌شوند</p>
+        <h1>🤖 پنل مدیریت سانتی</h1>
+        <div class="status"><span class="online">●</span> ربات آنلاین | <span id="lastUpdate">لحظه‌ای</span></div>
     </div>
-
-    <div class="stats-grid" id="stats">
-        <div class="stat-card"><div class="number" id="totalPlayers">-</div><div class="label">👤 کل کاربران</div></div>
-        <div class="stat-card"><div class="number" id="totalChats">-</div><div class="label">💬 چت‌های فعال</div></div>
-        <div class="stat-card"><div class="number" id="totalFights">-</div><div class="label">⚔️ مبارزات فعال</div></div>
-        <div class="stat-card"><div class="number" id="totalGifts">-</div><div class="label">🎁 کدهای هدیه</div></div>
+    <div class="nav-tabs">
+        <button class="active" data-tab="dashboard">📊 داشبورد</button>
+        <button data-tab="users">👤 کاربران</button>
+        <button data-tab="fights">⚔️ مبارزات</button>
+        <button data-tab="gifts">🎁 هدیه‌ها</button>
+        <button data-tab="chats">💬 چت‌ها</button>
+        <button data-tab="settings">⚙️ تنظیمات</button>
+        <button data-tab="logs">📋 لاگ‌ها</button>
     </div>
-
-    <div class="section">
-        <h2>📋 لیست کاربران</h2>
-        <div class="table-wrap" id="playersTable">در حال بارگذاری...</div>
+    <div id="tab-dashboard" class="tab-content active">
+        <div class="stats-grid" id="dashboardStats">
+            <div class="stat-card"><div class="number" id="totalPlayers">-</div><div class="label">👤 کل کاربران</div></div>
+            <div class="stat-card"><div class="number" id="totalChats">-</div><div class="label">💬 چت‌های فعال</div></div>
+            <div class="stat-card"><div class="number" id="totalFights">-</div><div class="label">⚔️ مبارزات فعال</div></div>
+            <div class="stat-card"><div class="number" id="totalGifts">-</div><div class="label">🎁 کدهای هدیه</div></div>
+            <div class="stat-card"><div class="number" id="totalMoney">-</div><div class="label">💰 کل سانت در گردش</div></div>
+        </div>
+        <div style="text-align:center;color:#666;font-size:13px;">
+            <button class="refresh-btn" onclick="fetchAllData()">🔄 به‌روزرسانی</button>
+        </div>
     </div>
-
-    <div class="section">
-        <h2>📊 اطلاعات چت‌ها</h2>
+    <div id="tab-users" class="tab-content">
+        <div class="search-box">
+            <input type="text" id="userSearch" placeholder="جستجو با Sander ID یا نام..." oninput="filterUsers()">
+            <button onclick="filterUsers()">🔍 جستجو</button>
+            <button class="btn btn-success" onclick="openAddMoneyModal()">➕ افزودن پول</button>
+        </div>
+        <div class="table-wrap" id="usersTable">در حال بارگذاری...</div>
+    </div>
+    <div id="tab-fights" class="tab-content">
+        <div class="table-wrap" id="fightsTable">در حال بارگذاری...</div>
+    </div>
+    <div id="tab-gifts" class="tab-content">
+        <div style="margin-bottom:15px;">
+            <button class="btn btn-success" onclick="openCreateGiftModal()">➕ ساخت کد هدیه جدید</button>
+        </div>
+        <div class="table-wrap" id="giftsTable">در حال بارگذاری...</div>
+    </div>
+    <div id="tab-chats" class="tab-content">
         <div class="table-wrap" id="chatsTable">در حال بارگذاری...</div>
     </div>
-
-    <div class="refresh-note">🔄 داده‌ها به‌طور خودکار به‌روز می‌شوند</div>
+    <div id="tab-settings" class="tab-content">
+        <div style="max-width:600px;">
+            <div style="background:#1a1a2e;padding:20px;border-radius:12px;margin-bottom:15px;border:1px solid #2a2a4a;">
+                <h4 style="color:#ffd200;">👑 مالک جهانی</h4>
+                <p>شناسه فعلی: <code id="currentOwner">-</code></p>
+                <div style="display:flex;gap:10px;margin-top:10px;">
+                    <input type="text" id="newOwnerInput" placeholder="Sander ID جدید" style="flex:1;padding:10px;border-radius:10px;border:1px solid #2a2a4a;background:#0d0d1a;color:#fff;">
+                    <button class="btn btn-primary" onclick="changeOwner()">تغییر</button>
+                </div>
+            </div>
+            <div style="background:#1a1a2e;padding:20px;border-radius:12px;border:1px solid #2a2a4a;">
+                <h4 style="color:#ffd200;">⚙️ کوoldown ها</h4>
+                <div style="margin:10px 0;"><label>گردونه (ثانیه):</label><input type="number" id="spinCooldown" value="3600" style="width:100%;padding:10px;border-radius:10px;border:1px solid #2a2a4a;background:#0d0d1a;color:#fff;"></div>
+                <div style="margin:10px 0;"><label>کازینو (ثانیه):</label><input type="number" id="casinoCooldown" value="120" style="width:100%;padding:10px;border-radius:10px;border:1px solid #2a2a4a;background:#0d0d1a;color:#fff;"></div>
+                <button class="btn btn-primary" onclick="saveCooldowns()">💾 ذخیره تنظیمات</button>
+            </div>
+            <div style="background:#1a1a2e;padding:20px;border-radius:12px;margin-top:15px;border:1px solid #2a2a4a;">
+                <h4 style="color:#ffd200;">💾 دیتابیس</h4>
+                <button class="btn btn-success" onclick="exportDatabase()">📤 خروجی JSON</button>
+                <button class="btn btn-danger" onclick="if(confirm('آیا مطمئن هستید؟')) resetDatabase()" style="margin-right:10px;">🗑️ ریست کامل</button>
+            </div>
+        </div>
+    </div>
+    <div id="tab-logs" class="tab-content">
+        <div class="table-wrap" id="logsTable">در حال بارگذاری...</div>
+    </div>
 </div>
-
+<div id="editUserModal" class="modal">
+    <div class="modal-content">
+        <h3>✏️ ویرایش کاربر</h3>
+        <input type="hidden" id="editUserId">
+        <label>موجودی جدید:</label><input type="number" id="editMoney" placeholder="مقدار جدید">
+        <label>لقب جدید:</label><input type="text" id="editNickname" placeholder="لقب جدید">
+        <div class="modal-buttons">
+            <button class="btn btn-danger" onclick="deleteUser()">🗑️ حذف کاربر</button>
+            <button class="btn btn-success" onclick="saveUserEdit()">💾 ذخیره</button>
+            <button class="btn" style="background:#333;color:#fff;" onclick="closeModal('editUserModal')">لغو</button>
+        </div>
+    </div>
+</div>
+<div id="addMoneyModal" class="modal">
+    <div class="modal-content">
+        <h3>➕ افزودن پول به کاربر</h3>
+        <label>Sander ID کاربر:</label><input type="text" id="addMoneyUserId" placeholder="Sander ID">
+        <label>مبلغ (به سانت):</label><input type="number" id="addMoneyAmount" placeholder="مقدار">
+        <div class="modal-buttons">
+            <button class="btn btn-success" onclick="addMoneyToUser()">✅ افزودن</button>
+            <button class="btn" style="background:#333;color:#fff;" onclick="closeModal('addMoneyModal')">لغو</button>
+        </div>
+    </div>
+</div>
+<div id="createGiftModal" class="modal">
+    <div class="modal-content">
+        <h3>🎁 ساخت کد هدیه</h3>
+        <label>نام هدیه:</label><input type="text" id="giftName" placeholder="مثلاً: هدیه نوروزی">
+        <label>مبلغ (به سانت):</label><input type="number" id="giftAmount" placeholder="مقدار">
+        <label>تعداد استفاده:</label><input type="number" id="giftMaxUsers" placeholder="تعداد" value="10">
+        <div class="modal-buttons">
+            <button class="btn btn-success" onclick="createGift()">🎁 ساخت</button>
+            <button class="btn" style="background:#333;color:#fff;" onclick="closeModal('createGiftModal')">لغو</button>
+        </div>
+    </div>
+</div>
+<div id="toast" class="toast" style="display:none;"></div>
 <script>
-    async function fetchData() {
+    let allData = { players: {}, chats: {}, fights: [], gifts: [], logs: [] };
+    document.querySelectorAll('.nav-tabs button').forEach(btn => {
+        btn.onclick = function() {
+            document.querySelectorAll('.nav-tabs button').forEach(b => b.classList.remove('active'));
+            this.classList.add('active');
+            document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
+            document.getElementById('tab-' + this.dataset.tab).classList.add('active');
+            fetchAllData();
+        };
+    });
+    document.querySelectorAll('.modal').forEach(m => {
+        m.onclick = function(e) { if(e.target === this) this.classList.remove('active'); };
+    });
+    function closeModal(id) { document.getElementById(id).classList.remove('active'); }
+    function showToast(msg, type='success') {
+        const t = document.getElementById('toast');
+        t.textContent = msg; t.className = 'toast toast-' + type; t.style.display = 'block';
+        setTimeout(() => t.style.display = 'none', 3000);
+    }
+    async function fetchAllData() {
         try {
             const res = await fetch('/api/data');
-            const data = await res.json();
-
-            document.getElementById('totalPlayers').textContent = data.total_players || 0;
-            document.getElementById('totalChats').textContent = data.total_chats || 0;
-            document.getElementById('totalFights').textContent = data.total_fights || 0;
-            document.getElementById('totalGifts').textContent = data.total_gifts || 0;
-
-            // جدول کاربران
-            let playersHtml = `<table><tr><th>شناسه</th><th>Sander ID</th><th>لقب</th></tr>`;
-            for (const [uid, info] of Object.entries(data.players || {})) {
-                playersHtml += `<tr><td><code>${uid}</code></td><td><code>${info.sander_id || 'ندارد'}</code></td><td>${info.nickname || 'بدون لقب'}</td></tr>`;
-            }
-            playersHtml += '</table>';
-            document.getElementById('playersTable').innerHTML = playersHtml;
-
-            // جدول چت‌ها
-            let chatsHtml = `<table><tr><th>شناسه چت</th><th>بازیکنان</th><th>مبارزات</th><th>هدیه‌ها</th></tr>`;
-            for (const [cid, info] of Object.entries(data.chats || {})) {
-                chatsHtml += `<tr><td><code>${cid}</code></td><td>${info.players}</td><td>${info.fights}</td><td>${info.gifts}</td></tr>`;
-            }
-            chatsHtml += '</table>';
-            document.getElementById('chatsTable').innerHTML = chatsHtml;
-
-        } catch (e) {
-            document.getElementById('playersTable').innerHTML = '<p style="color:red;">خطا در بارگذاری</p>';
-            document.getElementById('chatsTable').innerHTML = '<p style="color:red;">خطا در بارگذاری</p>';
-        }
+            allData = await res.json();
+            document.getElementById('lastUpdate').textContent = new Date().toLocaleTimeString('fa-IR');
+            document.getElementById('totalPlayers').textContent = allData.total_players || 0;
+            document.getElementById('totalChats').textContent = allData.total_chats || 0;
+            document.getElementById('totalFights').textContent = allData.total_fights || 0;
+            document.getElementById('totalGifts').textContent = allData.total_gifts || 0;
+            document.getElementById('totalMoney').textContent = (allData.total_money || 0).toLocaleString();
+            document.getElementById('currentOwner').textContent = allData.owner || 'نامشخص';
+            updateUsers(); updateFights(); updateGifts(); updateChats(); updateLogs();
+        } catch(e) { console.error(e); }
     }
-    fetchData();
-    setInterval(fetchData, 30000);
+    function filterUsers() { updateUsers(); }
+    function updateUsers() {
+        const search = document.getElementById('userSearch').value.toLowerCase();
+        let html = '<table><tr><th>Sander ID</th><th>لقب</th><th>موجودی</th><th>مبارزات</th><th>عملیات</th></tr>';
+        let count = 0;
+        for (const [uid, info] of Object.entries(allData.players || {})) {
+            const sander = info.sander_id || 'ندارد';
+            const nickname = info.nickname || 'بدون لقب';
+            const money = info.money || 0;
+            const fights = info.fights || 0;
+            if (search && !sander.toLowerCase().includes(search) && !nickname.includes(search)) continue;
+            html += `<tr><td><code>${sander}</code></td><td>${nickname}</td><td>${money.toLocaleString()}</td><td>${fights}</td><td>
+                <button class="btn btn-primary btn-sm" onclick="openEditUser('${uid}','${sander}','${nickname}',${money})">✏️</button>
+                <button class="btn btn-danger btn-sm" onclick="deleteUserBySander('${sander}')">🗑️</button>
+            </td></tr>`;
+            count++;
+        }
+        if (count === 0) html += '<tr><td colspan="5" style="text-align:center;color:#666;">هیچ کاربری یافت نشد</td></tr>';
+        html += '</table>';
+        document.getElementById('usersTable').innerHTML = html;
+    }
+    function openEditUser(uid, sander, nickname, money) {
+        document.getElementById('editUserId').value = uid;
+        document.getElementById('editMoney').value = money;
+        document.getElementById('editNickname').value = nickname;
+        document.getElementById('editUserModal').classList.add('active');
+    }
+    async function saveUserEdit() {
+        const uid = document.getElementById('editUserId').value;
+        const money = parseInt(document.getElementById('editMoney').value);
+        const nickname = document.getElementById('editNickname').value;
+        const res = await fetch('/api/edit_user', {
+            method: 'POST', headers: {'Content-Type':'application/json'},
+            body: JSON.stringify({user_id: uid, money, nickname})
+        });
+        const data = await res.json();
+        if (data.status === 'success') { showToast('✅ کاربر ویرایش شد'); closeModal('editUserModal'); fetchAllData(); }
+        else showToast('❌ خطا: ' + data.message, 'error');
+    }
+    async function deleteUser() {
+        const uid = document.getElementById('editUserId').value;
+        if (!confirm('آیا از حذف این کاربر مطمئن هستید؟')) return;
+        const res = await fetch('/api/delete_user', {
+            method: 'POST', headers: {'Content-Type':'application/json'},
+            body: JSON.stringify({user_id: uid})
+        });
+        const data = await res.json();
+        if (data.status === 'success') { showToast('✅ کاربر حذف شد'); closeModal('editUserModal'); fetchAllData(); }
+        else showToast('❌ خطا', 'error');
+    }
+    async function deleteUserBySander(sander) {
+        if (!confirm(`آیا از حذف کاربر ${sander} مطمئن هستید؟`)) return;
+        const res = await fetch('/api/delete_user_by_sander', {
+            method: 'POST', headers: {'Content-Type':'application/json'},
+            body: JSON.stringify({sander_id: sander})
+        });
+        const data = await res.json();
+        if (data.status === 'success') { showToast('✅ کاربر حذف شد'); fetchAllData(); }
+        else showToast('❌ خطا', 'error');
+    }
+    function openAddMoneyModal() { document.getElementById('addMoneyModal').classList.add('active'); }
+    async function addMoneyToUser() {
+        const sander = document.getElementById('addMoneyUserId').value.trim();
+        const amount = parseInt(document.getElementById('addMoneyAmount').value);
+        if (!sander || !amount || amount <= 0) { showToast('⚠️ اطلاعات را کامل وارد کنید', 'error'); return; }
+        const res = await fetch('/api/add_money', {
+            method: 'POST', headers: {'Content-Type':'application/json'},
+            body: JSON.stringify({sander_id: sander, amount})
+        });
+        const data = await res.json();
+        if (data.status === 'success') { showToast(`✅ ${amount} سانت به ${sander} اضافه شد`); closeModal('addMoneyModal'); fetchAllData(); }
+        else showToast('❌ ' + data.message, 'error');
+    }
+    function updateFights() {
+        const fights = allData.fights || [];
+        let html = '<table><tr><th>کد</th><th>شرط</th><th>وضعیت</th><th>عملیات</th></tr>';
+        if (fights.length === 0) html += '<tr><td colspan="4" style="text-align:center;color:#666;">هیچ مبارزه فعالی وجود ندارد</td></tr>';
+        for (const f of fights) {
+            html += `<tr><td><code>${f.code}</code></td><td>${f.bet_amount || 0}</td><td><span class="badge ${f.status === 'pending' ? 'badge-success' : 'badge-warning'}">${f.status}</span></td>
+                <td><button class="btn btn-danger btn-sm" onclick="deleteFight('${f.chat_id}','${f.key}')">🗑️ حذف</button></td></tr>`;
+        }
+        html += '</table>';
+        document.getElementById('fightsTable').innerHTML = html;
+    }
+    async function deleteFight(chat_id, key) {
+        if (!confirm('حذف مبارزه؟')) return;
+        const res = await fetch('/api/delete_fight', {
+            method: 'POST', headers: {'Content-Type':'application/json'},
+            body: JSON.stringify({chat_id, key})
+        });
+        const data = await res.json();
+        if (data.status === 'success') { showToast('✅ مبارزه حذف شد'); fetchAllData(); }
+    }
+    function updateGifts() {
+        const gifts = allData.gifts || [];
+        let html = '<table><tr><th>کد</th><th>مبلغ</th><th>استفاده</th><th>عملیات</th></tr>';
+        if (gifts.length === 0) html += '<tr><td colspan="4" style="text-align:center;color:#666;">هیچ کد هدیه‌ای وجود ندارد</td></tr>';
+        for (const g of gifts) {
+            html += `<tr><td><code>${g.code}</code></td><td>${g.amount}</td><td>${g.used_count || 0}/${g.max_users || 0}</td>
+                <td><button class="btn btn-danger btn-sm" onclick="deleteGift('${g.code}')">🗑️</button></td></tr>`;
+        }
+        html += '</table>';
+        document.getElementById('giftsTable').innerHTML = html;
+    }
+    async function deleteGift(code) {
+        if (!confirm(`حذف کد ${code}؟`)) return;
+        const res = await fetch('/api/delete_gift', {
+            method: 'POST', headers: {'Content-Type':'application/json'},
+            body: JSON.stringify({code})
+        });
+        const data = await res.json();
+        if (data.status === 'success') { showToast('✅ کد هدیه حذف شد'); fetchAllData(); }
+    }
+    function openCreateGiftModal() { document.getElementById('createGiftModal').classList.add('active'); }
+    async function createGift() {
+        const name = document.getElementById('giftName').value.trim();
+        const amount = parseInt(document.getElementById('giftAmount').value);
+        const max_users = parseInt(document.getElementById('giftMaxUsers').value);
+        if (!name || !amount || amount <= 0 || !max_users || max_users <= 0) {
+            showToast('⚠️ اطلاعات را کامل وارد کنید', 'error'); return;
+        }
+        const res = await fetch('/api/create_gift', {
+            method: 'POST', headers: {'Content-Type':'application/json'},
+            body: JSON.stringify({name, amount, max_users})
+        });
+        const data = await res.json();
+        if (data.status === 'success') { showToast(`✅ کد هدیه ${data.code} ساخته شد`); closeModal('createGiftModal'); fetchAllData(); }
+        else showToast('❌ خطا', 'error');
+    }
+    function updateChats() {
+        const chats = allData.chats || {};
+        let html = '<table><tr><th>شناسه چت</th><th>بازیکنان</th><th>مبارزات</th><th>هدیه‌ها</th></tr>';
+        let count = 0;
+        for (const [cid, info] of Object.entries(chats)) {
+            html += `<tr><td><code>${cid}</code></td><td>${info.players || 0}</td><td>${info.fights || 0}</td><td>${info.gifts || 0}</td></tr>`;
+            count++;
+        }
+        if (count === 0) html += '<tr><td colspan="4" style="text-align:center;color:#666;">هیچ چتی وجود ندارد</td></tr>';
+        html += '</table>';
+        document.getElementById('chatsTable').innerHTML = html;
+    }
+    function updateLogs() {
+        const logs = allData.logs || [];
+        let html = '<table><tr><th>زمان</th><th>عملیات</th></tr>';
+        if (logs.length === 0) html += '<tr><td colspan="2" style="text-align:center;color:#666;">هیچ لاگی وجود ندارد</td></tr>';
+        for (const log of logs) {
+            html += `<tr><td>${log.time}</td><td>${log.action}</td></tr>`;
+        }
+        html += '</table>';
+        document.getElementById('logsTable').innerHTML = html;
+    }
+    async function changeOwner() {
+        const newOwner = document.getElementById('newOwnerInput').value.trim();
+        if (!newOwner) { showToast('⚠️ شناسه را وارد کنید', 'error'); return; }
+        const res = await fetch('/api/set_owner', {
+            method: 'POST', headers: {'Content-Type':'application/json'},
+            body: JSON.stringify({sander_id: newOwner})
+        });
+        const data = await res.json();
+        if (data.status === 'success') { showToast('✅ مالک جهانی تغییر کرد'); document.getElementById('currentOwner').textContent = newOwner; fetchAllData(); }
+        else showToast('❌ خطا', 'error');
+    }
+    async function saveCooldowns() {
+        const spin = parseInt(document.getElementById('spinCooldown').value);
+        const casino = parseInt(document.getElementById('casinoCooldown').value);
+        const res = await fetch('/api/set_cooldowns', {
+            method: 'POST', headers: {'Content-Type':'application/json'},
+            body: JSON.stringify({spin_cooldown: spin, casino_cooldown: casino})
+        });
+        const data = await res.json();
+        if (data.status === 'success') showToast('✅ تنظیمات ذخیره شد');
+    }
+    async function exportDatabase() { window.open('/api/export_db', '_blank'); }
+    async function resetDatabase() {
+        if (!confirm('⚠️ ریست کامل دیتابیس! همه داده‌ها از بین می‌روند. ادامه؟')) return;
+        const res = await fetch('/api/reset_db', {method: 'POST'});
+        const data = await res.json();
+        if (data.status === 'success') { showToast('✅ دیتابیس ریست شد'); fetchAllData(); }
+    }
+    fetchAllData();
+    setInterval(fetchAllData, 30000);
 </script>
 </body>
 </html>
 """
+
+# ============================
+#  Flask Routes (API)
+# ============================
 
 @app.route('/')
 def index():
@@ -249,35 +457,276 @@ def api_data():
         data = {"global_players": {}}
     
     players = data.get("global_players", {})
+    total_money = 0
     total_fights = 0
     total_gifts = 0
     chats = {}
+    all_fights = []
+    all_gifts = []
+    
     for chat_id, chat in data.items():
         if chat_id == "global_players":
             continue
+        chat_players = chat.get("players", {})
+        for uid, p in chat_players.items():
+            if uid in players:
+                players[uid]["money"] = p.get("money", 0)
+                if "fights" not in players[uid]:
+                    players[uid]["fights"] = 0
+                players[uid]["fights"] += len(chat.get("fights", {}))
+        
         chats[chat_id] = {
-            "players": len(chat.get("players", {})),
+            "players": len(chat_players),
             "fights": len(chat.get("fights", {})),
             "gifts": len(chat.get("gift_codes", []))
         }
         total_fights += len(chat.get("fights", {}))
         total_gifts += len(chat.get("gift_codes", []))
+        
+        for key, fight in chat.get("fights", {}).items():
+            all_fights.append({
+                "chat_id": chat_id,
+                "key": key,
+                "code": fight.get("code", ""),
+                "bet_amount": fight.get("bet_amount", 0),
+                "status": fight.get("status", "unknown")
+            })
+        
+        for gift in chat.get("gift_codes", []):
+            all_gifts.append(gift)
+    
+    for uid, info in players.items():
+        total_money += info.get("money", 0)
     
     return jsonify({
         "total_players": len(players),
         "total_chats": len(chats),
         "total_fights": total_fights,
         "total_gifts": total_gifts,
+        "total_money": total_money,
+        "owner": GLOBAL_OWNER_SANDER_ID,
         "players": players,
-        "chats": chats
+        "chats": chats,
+        "fights": all_fights,
+        "gifts": all_gifts,
+        "logs": admin_logs[-100:]
     })
 
-def start_web_panel():
-    """راه‌اندازی Flask در یک ترد جداگانه"""
-    app.run(host='0.0.0.0', port=5000, debug=False, use_reloader=False)
+@app.route('/api/edit_user', methods=['POST'])
+def edit_user():
+    data = request.json
+    user_id = data.get('user_id')
+    new_money = data.get('money')
+    new_nickname = data.get('nickname', '')
+    try:
+        with open(DATA_FILE, 'r+', encoding='utf-8') as f:
+            db = json.load(f)
+            if user_id in db.get("global_players", {}):
+                db["global_players"][user_id]["nickname"] = new_nickname
+            for chat_id, chat in db.items():
+                if chat_id == "global_players":
+                    continue
+                if user_id in chat.get("players", {}):
+                    chat["players"][user_id]["money"] = new_money
+            f.seek(0)
+            json.dump(db, f, ensure_ascii=False, indent=2)
+            f.truncate()
+        admin_logs.append({"time": time.strftime("%Y-%m-%d %H:%M:%S"), "action": f"ویرایش کاربر {user_id}: موجودی={new_money}, لقب={new_nickname}"})
+        return jsonify({"status": "success"})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+@app.route('/api/delete_user', methods=['POST'])
+def delete_user():
+    data = request.json
+    user_id = data.get('user_id')
+    try:
+        with open(DATA_FILE, 'r+', encoding='utf-8') as f:
+            db = json.load(f)
+            if user_id in db.get("global_players", {}):
+                del db["global_players"][user_id]
+            for chat_id, chat in db.items():
+                if chat_id == "global_players":
+                    continue
+                if user_id in chat.get("players", {}):
+                    del chat["players"][user_id]
+            f.seek(0)
+            json.dump(db, f, ensure_ascii=False, indent=2)
+            f.truncate()
+        admin_logs.append({"time": time.strftime("%Y-%m-%d %H:%M:%S"), "action": f"حذف کاربر {user_id}"})
+        return jsonify({"status": "success"})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+@app.route('/api/delete_user_by_sander', methods=['POST'])
+def delete_user_by_sander():
+    data = request.json
+    sander_id = data.get('sander_id')
+    try:
+        target_uid = None
+        with open(DATA_FILE, 'r', encoding='utf-8') as f:
+            db = json.load(f)
+            for uid, info in db.get("global_players", {}).items():
+                if info.get("sander_id") == sander_id:
+                    target_uid = uid
+                    break
+        if not target_uid:
+            return jsonify({"status": "error", "message": "کاربر یافت نشد"}), 404
+        with open(DATA_FILE, 'r+', encoding='utf-8') as f:
+            db = json.load(f)
+            if target_uid in db.get("global_players", {}):
+                del db["global_players"][target_uid]
+            for chat_id, chat in db.items():
+                if chat_id == "global_players":
+                    continue
+                if target_uid in chat.get("players", {}):
+                    del chat["players"][target_uid]
+            f.seek(0)
+            json.dump(db, f, ensure_ascii=False, indent=2)
+            f.truncate()
+        admin_logs.append({"time": time.strftime("%Y-%m-%d %H:%M:%S"), "action": f"حذف کاربر با Sander ID {sander_id}"})
+        return jsonify({"status": "success"})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+@app.route('/api/add_money', methods=['POST'])
+def add_money():
+    data = request.json
+    sander_id = data.get('sander_id')
+    amount = data.get('amount', 0)
+    try:
+        target_uid = None
+        with open(DATA_FILE, 'r', encoding='utf-8') as f:
+            db = json.load(f)
+            for uid, info in db.get("global_players", {}).items():
+                if info.get("sander_id") == sander_id:
+                    target_uid = uid
+                    break
+        if not target_uid:
+            return jsonify({"status": "error", "message": "کاربر یافت نشد"}), 404
+        with open(DATA_FILE, 'r+', encoding='utf-8') as f:
+            db = json.load(f)
+            for chat_id, chat in db.items():
+                if chat_id == "global_players":
+                    continue
+                if target_uid in chat.get("players", {}):
+                    chat["players"][target_uid]["money"] = chat["players"][target_uid].get("money", 0) + amount
+                    break
+            f.seek(0)
+            json.dump(db, f, ensure_ascii=False, indent=2)
+            f.truncate()
+        admin_logs.append({"time": time.strftime("%Y-%m-%d %H:%M:%S"), "action": f"افزودن {amount} سانت به کاربر {sander_id}"})
+        return jsonify({"status": "success"})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+@app.route('/api/delete_fight', methods=['POST'])
+def delete_fight():
+    data = request.json
+    chat_id = data.get('chat_id')
+    key = data.get('key')
+    try:
+        with open(DATA_FILE, 'r+', encoding='utf-8') as f:
+            db = json.load(f)
+            if chat_id in db and key in db[chat_id].get("fights", {}):
+                del db[chat_id]["fights"][key]
+            f.seek(0)
+            json.dump(db, f, ensure_ascii=False, indent=2)
+            f.truncate()
+        admin_logs.append({"time": time.strftime("%Y-%m-%d %H:%M:%S"), "action": f"حذف مبارزه {key} در چت {chat_id}"})
+        return jsonify({"status": "success"})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+@app.route('/api/create_gift', methods=['POST'])
+def create_gift():
+    data = request.json
+    name = data.get('name', 'هدیه')
+    amount = data.get('amount', 0)
+    max_users = data.get('max_users', 10)
+    try:
+        code = name.replace(" ", "").upper()
+        with open(DATA_FILE, 'r+', encoding='utf-8') as f:
+            db = json.load(f)
+            for chat_id, chat in db.items():
+                if chat_id == "global_players":
+                    continue
+                if "gift_codes" not in chat:
+                    chat["gift_codes"] = []
+                chat["gift_codes"].append({
+                    "code": code,
+                    "display_name": name,
+                    "amount": amount,
+                    "max_users": max_users,
+                    "used_count": 0,
+                    "created_at": time.time()
+                })
+                break
+            f.seek(0)
+            json.dump(db, f, ensure_ascii=False, indent=2)
+            f.truncate()
+        admin_logs.append({"time": time.strftime("%Y-%m-%d %H:%M:%S"), "action": f"ساخت کد هدیه {code} با مبلغ {amount}"})
+        return jsonify({"status": "success", "code": code})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+@app.route('/api/delete_gift', methods=['POST'])
+def delete_gift():
+    data = request.json
+    code = data.get('code')
+    try:
+        with open(DATA_FILE, 'r+', encoding='utf-8') as f:
+            db = json.load(f)
+            for chat_id, chat in db.items():
+                if chat_id == "global_players":
+                    continue
+                if "gift_codes" in chat:
+                    chat["gift_codes"] = [g for g in chat["gift_codes"] if g["code"] != code]
+            f.seek(0)
+            json.dump(db, f, ensure_ascii=False, indent=2)
+            f.truncate()
+        admin_logs.append({"time": time.strftime("%Y-%m-%d %H:%M:%S"), "action": f"حذف کد هدیه {code}"})
+        return jsonify({"status": "success"})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+@app.route('/api/set_owner', methods=['POST'])
+def set_owner():
+    global GLOBAL_OWNER_SANDER_ID
+    data = request.json
+    GLOBAL_OWNER_SANDER_ID = data.get('sander_id')
+    admin_logs.append({"time": time.strftime("%Y-%m-%d %H:%M:%S"), "action": f"تغییر مالک جهانی به {GLOBAL_OWNER_SANDER_ID}"})
+    return jsonify({"status": "success"})
+
+@app.route('/api/set_cooldowns', methods=['POST'])
+def set_cooldowns():
+    global SPIN_COOLDOWN, CASINO_COOLDOWN
+    data = request.json
+    SPIN_COOLDOWN = data.get('spin_cooldown', 3600)
+    CASINO_COOLDOWN = data.get('casino_cooldown', 120)
+    admin_logs.append({"time": time.strftime("%Y-%m-%d %H:%M:%S"), "action": f"تغییر کوoldown ها: اسپین={SPIN_COOLDOWN}, کازینو={CASINO_COOLDOWN}"})
+    return jsonify({"status": "success"})
+
+@app.route('/api/export_db')
+def export_db():
+    try:
+        with open(DATA_FILE, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except:
+        return {"error": "no data"}
+
+@app.route('/api/reset_db', methods=['POST'])
+def reset_db():
+    try:
+        with open(DATA_FILE, 'w', encoding='utf-8') as f:
+            json.dump({}, f, ensure_ascii=False, indent=2)
+        admin_logs.append({"time": time.strftime("%Y-%m-%d %H:%M:%S"), "action": "ریست کامل دیتابیس"})
+        return jsonify({"status": "success"})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
 
 # ============================
-#  توابع کمکی
+#  توابع کمکی ربات
 # ============================
 
 def to_en_digits(text):
@@ -359,10 +808,6 @@ def format_money(money, is_owner_flag=False):
     if money >= 999999999:
         return "💎 بینهایت 💎"
     return str(money)
-
-# ============================
-#  اسلات (گردونه با شانس پوچ کمتر)
-# ============================
 
 def spin_slots():
     rand = random.random()
@@ -463,10 +908,6 @@ async def ensure_player_exists(user_id, chat_data):
         await save_global_db()
 
     return chat_data["players"][user_id]
-
-# ============================
-#  ارسال پیام‌های طولانی
-# ============================
 
 async def send_long_message(message, text, chunk_size=4000):
     if len(text) <= chunk_size:
@@ -603,6 +1044,13 @@ async def check_casino_ready(chat_id, message):
             del casino_games[chat_id]
             await save_global_db()
 
+async def auto_cancel_casino(chat_id, message):
+    await asyncio.sleep(60)
+    if chat_id in casino_games and casino_games[chat_id]["stage"] == "waiting_bet":
+        await message.reply("⏰ زمان وارد کردن عدد به پایان رسید. بازی لغو شد.")
+        del casino_games[chat_id]
+        await save_global_db()
+
 # ============================
 #  رویدادهای ربات
 # ============================
@@ -641,7 +1089,6 @@ async def handle_message(bot: Robot, message: Message):
         text = message.text.strip()
         lower_text = text.lower()
 
-        # ---------- ذخیره لاگ ----------
         if "chat_logs" not in chat_data:
             chat_data["chat_logs"] = []
         sander_id = get_sander_id(user_id) or "بدون شناسه"
@@ -655,9 +1102,7 @@ async def handle_message(bot: Robot, message: Message):
             chat_data["user_message_counts"][user_id] = 0
         chat_data["user_message_counts"][user_id] += 1
 
-        # =============================================
-        #  IM_BEST (فقط پیام خصوصی)
-        # =============================================
+        # ===== IM_BEST =====
         if lower_text == "im_best":
             if message.chat_type != "private":
                 await message.reply("⛔ این دستور فقط در پیام خصوصی قابل استفاده است.")
@@ -675,9 +1120,7 @@ async def handle_message(bot: Robot, message: Message):
             await message.reply("✅ **تبریک! شما اکنون مالک جهانی ربات هستید.**")
             return
 
-        # =============================================
-        #  راهنما
-        # =============================================
+        # ===== راهنما =====
         if lower_text == "راهنما":
             help_text = """💠 **راهنمای جامع ربات سانتی** 💠
 
@@ -721,9 +1164,7 @@ async def handle_message(bot: Robot, message: Message):
             await save_global_db()
             return
 
-        # =============================================
-        #  راهنمای لیدر
-        # =============================================
+        # ===== راهنمای لیدر =====
         if lower_text == "راهنمای لیدر":
             sander = get_sander_id(user_id)
             if not sander or not is_global_owner(sander):
@@ -753,9 +1194,7 @@ async def handle_message(bot: Robot, message: Message):
             await save_global_db()
             return
 
-        # =============================================
-        #  ثبت لقب
-        # =============================================
+        # ===== ثبت لقب =====
         if lower_text.startswith("ثبت"):
             parts = lower_text.split(maxsplit=1)
             if len(parts) < 2:
@@ -776,9 +1215,7 @@ async def handle_message(bot: Robot, message: Message):
             await message.reply(f"✅ **لقب جدید (سراسری):** `{new_nickname}`")
             return
 
-        # =============================================
-        #  دستورات مدیریت جهانی
-        # =============================================
+        # ===== دستورات مدیریت جهانی =====
         if lower_text == "global_help":
             sander = get_sander_id(user_id)
             is_gm = is_global_owner(sander) if sander else False
@@ -876,9 +1313,7 @@ async def handle_message(bot: Robot, message: Message):
             await message.reply("✅ **مالکیت محلی لغو شد.**")
             return
 
-        # =============================================
-        #  سایر دستورات مالک
-        # =============================================
+        # ===== سایر دستورات مالک =====
         if lower_text == "ریست دول":
             if not is_owner_flag:
                 await message.reply("⛔ شما مالک نیستید!")
@@ -1081,9 +1516,7 @@ async def handle_message(bot: Robot, message: Message):
             await save_global_db()
             return
 
-        # =============================================
-        #  جوایز رایگان
-        # =============================================
+        # ===== جوایز رایگان =====
         if lower_text == "سانتی":
             now = time.time()
             global_time = chat_data.get("global_sanati_time", 0)
@@ -1125,7 +1558,7 @@ async def handle_message(bot: Robot, message: Message):
 قبل: {before_money} | بعد: {after_money}""")
             return
 
-        # گردونه با شانس پوچ کمتر (۲۵٪)
+        # گردونه با شانس پوچ کمتر
         if lower_text == "گردونه":
             now = time.time()
             last_spin = player.get("last_spin_time", 0)
@@ -1134,7 +1567,6 @@ async def handle_message(bot: Robot, message: Message):
                 await message.reply(f"⏳ زمان باقی‌مانده: {format_time(remaining)}")
                 await save_global_db()
                 return
-            # شانس پوچ: ۲۵٪ (وزن‌های ۱۵ و ۱۰ به‌جای ۴۰ و ۳۰)
             weights = [("پوچ", 15), ("پوچ", 10), (5, 15), (10, 12), (13, 10), (20, 8), (50, 5), (100, 3), (500, 2)]
             total_weight = sum(w for _, w in weights)
             rand_val = random.uniform(0, total_weight)
@@ -1160,9 +1592,7 @@ async def handle_message(bot: Robot, message: Message):
                 await message.reply("😢 **پوچ!** دوباره تلاش کنید.")
             return
 
-        # =============================================
-        #  انتقال پول
-        # =============================================
+        # ===== انتقال پول =====
         if lower_text.startswith("اهدای سانت"):
             parts = lower_text[len("اهدای سانت"):].strip().split()
             if len(parts) < 2:
@@ -1225,9 +1655,7 @@ async def handle_message(bot: Robot, message: Message):
 گیرنده: {receiver_display}""")
             return
 
-        # =============================================
-        #  هدیه
-        # =============================================
+        # ===== هدیه =====
         if lower_text.startswith("هدیه"):
             parts = lower_text.split()
             if len(parts) < 2:
@@ -1281,9 +1709,7 @@ async def handle_message(bot: Robot, message: Message):
 قبل: {before_money} | بعد: {player['money']}""")
             return
 
-        # =============================================
-        #  دولداران
-        # =============================================
+        # ===== دولداران =====
         if lower_text.startswith("دولداران"):
             parts = lower_text.split()
             if len(parts) == 1:
@@ -1349,9 +1775,7 @@ async def handle_message(bot: Robot, message: Message):
             await save_global_db()
             return
 
-        # =============================================
-        #  پروفایل
-        # =============================================
+        # ===== پروفایل =====
         if lower_text == "پروف":
             stats = player.get("stats", {})
             wins = stats.get('wins', 0)
@@ -1380,9 +1804,7 @@ async def handle_message(bot: Robot, message: Message):
             await save_global_db()
             return
 
-        # =============================================
-        #  مبارزه (با نمایش قطعی موجودی)
-        # =============================================
+        # ===== مبارزه =====
         if lower_text.startswith("مبارزه"):
             parts = lower_text.split()
             if len(parts) < 2:
@@ -1421,7 +1843,6 @@ async def handle_message(bot: Robot, message: Message):
                 "is_requester_owner": is_requester_owner
             }
             await save_global_db()
-            # نمایش موجودی در پیام دعوت
             await message.reply(f"""🔥 **دعوت مبارزه ارسال شد!**
 ━━━━━━━━━━━━━━━━━━━━━━━
 💰 **شرط:** {bet} سانت
@@ -1431,9 +1852,7 @@ async def handle_message(bot: Robot, message: Message):
 هر کسی کد بالا را با دستور `تایید` وارد کند، حریف شما می‌شود.""")
             return
 
-        # =============================================
-        #  لیست مبارزه
-        # =============================================
+        # ===== لیست مبارزه =====
         if lower_text == "لیست مبارزه":
             fights = []
             active_statuses = ["pending", "waiting_for_acceptance"]
@@ -1449,9 +1868,7 @@ async def handle_message(bot: Robot, message: Message):
             await save_global_db()
             return
 
-        # =============================================
-        #  تایید مبارزه
-        # =============================================
+        # ===== تایید مبارزه =====
         if lower_text.startswith("تایید"):
             parts = lower_text.split()
             if len(parts) < 2:
@@ -1526,9 +1943,7 @@ async def handle_message(bot: Robot, message: Message):
             await save_global_db()
             return
 
-        # =============================================
-        #  لغو مبارزه
-        # =============================================
+        # ===== لغو مبارزه =====
         if lower_text == "غیرفعال":
             cancelled = False
             for k, f in list(chat_data["fights"].items()):
@@ -1543,9 +1958,7 @@ async def handle_message(bot: Robot, message: Message):
                 await message.reply("⚠️ شما هیچ مبارزه فعالی برای لغو ندارید.")
             return
 
-        # =============================================
-        #  متن (آمار پیام‌ها)
-        # =============================================
+        # ===== متن (آمار پیام‌ها) =====
         if lower_text == "متن":
             if not is_owner_flag:
                 await message.reply("⛔ **خطا:** شما دسترسی مشاهده آمار پیام‌ها را ندارید.")
@@ -1578,11 +1991,8 @@ async def handle_message(bot: Robot, message: Message):
             await save_global_db()
             return
 
-        # =============================================
-        #  کازینو (با لغو در صورت عدم ورود عدد)
-        # =============================================
+        # ===== کازینو =====
         if lower_text == "کازینو":
-            # اگر بازی در حال اجراست، فقط به کاربر جدید اطلاع بده
             if chat_id in casino_games:
                 await message.reply("⚠️ در حال حاضر یک بازی کازینو در این چت در جریان است. لطفاً کمی صبر کنید.")
                 await save_global_db()
@@ -1609,21 +2019,18 @@ async def handle_message(bot: Robot, message: Message):
                 "created_at": time.time()
             }
             await message.reply("🎰 **بازی کازینو شروع شد!**\nلطفاً مبلغ شرط خود را به **سانت** وارد کنید (عدد مثبت).\n⏳ اگر عددی وارد نکنید، بازی کنسل می‌شود.")
-            # تسک برای لغو خودکار در صورت عدم ورود عدد
             asyncio.create_task(auto_cancel_casino(chat_id, message))
             return
 
-        # مرحله waiting_bet (فقط میزبان)
+        # مرحله waiting_bet
         if chat_id in casino_games and casino_games[chat_id]["stage"] == "waiting_bet":
             if user_id != casino_games[chat_id]["host"]:
-                # به بقیه کاربران چیزی نمیگوییم
                 return
             try:
                 bet_amount = int(to_en_digits(text))
                 if bet_amount <= 0:
                     raise ValueError
             except:
-                # اگر عدد نامعتبر وارد کرد، بازی کنسل شود
                 await message.reply("❌ عدد نامعتبر! بازی لغو شد.")
                 del casino_games[chat_id]
                 await save_global_db()
@@ -1641,7 +2048,7 @@ async def handle_message(bot: Robot, message: Message):
             await save_global_db()
             return
 
-        # مرحله waiting_players (فقط میزبان)
+        # مرحله waiting_players
         if chat_id in casino_games and casino_games[chat_id]["stage"] == "waiting_players":
             if user_id != casino_games[chat_id]["host"]:
                 return
@@ -1734,19 +2141,14 @@ async def handle_message(bot: Robot, message: Message):
         await save_global_db()
 
 # ============================
-#  تسک لغو خودکار کازینو
+#  راه‌اندازی Flask در ترد جداگانه
 # ============================
 
-async def auto_cancel_casino(chat_id, message):
-    """اگر کاربر ظرف ۶۰ ثانیه عدد وارد نکرد، بازی کنسل شود"""
-    await asyncio.sleep(60)
-    if chat_id in casino_games and casino_games[chat_id]["stage"] == "waiting_bet":
-        await message.reply("⏰ زمان وارد کردن عدد به پایان رسید. بازی لغو شد.")
-        del casino_games[chat_id]
-        await save_global_db()
+def start_web_panel():
+    app.run(host='0.0.0.0', port=5000, debug=False, use_reloader=False)
 
 # ============================
-#  اجرای اصلی (ربات + پنل)
+#  اجرای اصلی
 # ============================
 
 async def main():
@@ -1755,10 +2157,9 @@ async def main():
     print(f"✅ دیتابیس از {DATA_FILE} بارگذاری شد.")
     print(f"✅ مالک جهانی: {GLOBAL_OWNER_SANDER_ID}")
 
-    # راه‌اندازی پنل مدیریت در ترد جداگانه
     web_thread = threading.Thread(target=start_web_panel, daemon=True)
     web_thread.start()
-    print("✅ پنل مدیریت در http://0.0.0.0:5000 راه‌اندازی شد.")
+    print("✅ پنل مدیریت کامل در http://0.0.0.0:5000 راه‌اندازی شد.")
 
     try:
         await bot.run()
