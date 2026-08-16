@@ -22,7 +22,7 @@ GIFT_CODE_DEFAULT = "Lk"
 GIFT_AMOUNT_DEFAULT = 1
 MAX_GIFT_USERS_DEFAULT = 1
 SPIN_COOLDOWN = 3600
-CASINO_COOLDOWN = 120  # ۲ دقیقه
+CASINO_COOLDOWN = 120
 
 GLOBAL_OWNER_SANDER_ID = "0MK1E1"
 
@@ -117,19 +117,11 @@ def format_money(money, is_owner_flag=False):
     return str(money)
 
 # ============================
-#  توابع اسلات ماشین (با احتمالات جدید)
+#  توابع اسلات (با احتمال ۸۰٪ برد)
 # ============================
 
 def spin_slots():
-    """
-    بازگرداندن ضریب بر اساس احتمالات:
-    - ۲۰٪ باخت کامل (ضریب ۰)
-    - ۳۰٪ مساوی (ضریب ۱)
-    - ۳۰٪ دو برابر (ضریب ۲)
-    - ۱۰٪ سه برابر (ضریب ۳)
-    - ۱۰٪ پنج برابر (ضریب ۵)
-    """
-    rand = random.random()  # 0.0 تا 1.0
+    rand = random.random()
     if rand < 0.20:
         multiplier = 0
     elif rand < 0.50:
@@ -140,12 +132,10 @@ def spin_slots():
         multiplier = 3
     else:
         multiplier = 5
-    # نمادهای تصادفی برای نمایش
     symbols = [random.choice(["🍒", "🍋", "🍊", "🍇", "🔔", "💎", "7️⃣"]) for _ in range(3)]
     return symbols, multiplier
 
 def calculate_prize(bet, multiplier):
-    """جایزه نهایی = شرط * ضریب"""
     return bet * multiplier
 
 # ============================
@@ -206,7 +196,6 @@ def create_empty_chat_data():
     }
 
 async def ensure_player_exists(user_id, chat_data):
-    # بخش سراسری
     global_players = global_db.get("global_players", {})
     if user_id not in global_players:
         new_sander_id = generate_sander_id()
@@ -217,13 +206,12 @@ async def ensure_player_exists(user_id, chat_data):
         global_db["global_players"] = global_players
         await save_global_db()
 
-    # بخش محلی
     if user_id not in chat_data["players"]:
         chat_data["players"][user_id] = {
             "last_dood_time": 0,
             "last_transfer_time": 0,
             "last_spin_time": 0,
-            "last_casino_time": 0,  # جدید برای کازینو
+            "last_casino_time": 0,
             "used_gift_codes": [],
             "stats": {"total_fights": 0, "wins": 0, "losses": 0, "transfer_count": 0},
             "money": 0
@@ -264,7 +252,7 @@ async def send_long_message(message, text, chunk_size=4000):
         await message.reply(chunk)
 
 # ============================
-#  توابع کازینو (به‌روز شده)
+#  توابع کازینو
 # ============================
 
 async def process_single_player_game(chat_id, message):
@@ -280,18 +268,12 @@ async def process_single_player_game(chat_id, message):
     symbols, multiplier = spin_slots()
     prize = calculate_prize(bet, multiplier)
 
-    # محاسبه تغییرات
     before_money = safe_get_money(player)
     if not is_owner(chat_data, user_id):
-        # کسر شرط از موجودی
         player["money"] -= bet
-        # اضافه کردن جایزه
         player["money"] += prize
-    # برای مالک، تغییری در موجودی نمی‌دهیم (بینهایت)
-
     after_money = safe_get_money(player)
 
-    # تولید پیام نتیجه
     symbols_str = " | ".join(symbols)
     if multiplier == 0:
         result_text = f"😢 **باخت کامل!**\nشما {bet} سانت را از دست دادید."
@@ -340,7 +322,6 @@ async def process_multiplayer_game(chat_id, message):
 
     total_prize = bet * len(players)
 
-    # اعمال تغییرات روی همه بازیکنان
     for uid in players:
         player_data = chat_data["players"].get(uid)
         if not player_data:
@@ -355,7 +336,6 @@ async def process_multiplayer_game(chat_id, message):
 
     await save_global_db()
 
-    # ساخت پیام نتیجه
     msg = "🎰 **نتیجه بازی کازینو (چندنفره)**\n━━━━━━━━━━━━━━━━━━━━━━━\n"
     for uid, r in results.items():
         name = get_display_name_from_global(uid)
@@ -432,8 +412,10 @@ async def handle_message(bot: Robot, message: Message):
         chat_data["user_message_counts"][user_id] += 1
 
         # =============================================
-        #  دستور IM_BEST (فقط پیام خصوصی)
+        #  دستورات عمومی (ابتدا همه را بررسی کن)
         # =============================================
+
+        # IM_BEST (فقط پیام خصوصی)
         if lower_text == "im_best":
             if message.chat_type != "private":
                 await message.reply("⛔ این دستور فقط در پیام خصوصی قابل استفاده است.")
@@ -448,19 +430,16 @@ async def handle_message(bot: Robot, message: Message):
             GLOBAL_OWNER_SANDER_ID = user_sander
             chat_data["owner_sander_id"] = user_sander
             await save_global_db()
-            await message.reply("✅ **تبریک! شما اکنون مالک جهانی ربات هستید.**\nهمه چیز برای شما بینهایت است.")
+            await message.reply("✅ **تبریک! شما اکنون مالک جهانی ربات هستید.**")
             return
 
-        # =============================================
-        #  راهنما
-        # =============================================
+        # راهنما
         if lower_text == "راهنما":
             help_text = """💠 **راهنمای جامع ربات سانتی** 💠
 
 🔰 **مدیریت هویت و پروفایل**
 • `ثبت لقب [نام]` — تغییر نام نمایشی شما (سراسری)
 • `پروف` — مشاهده اطلاعات کامل
-• `موجودی [آیدی]` — دیدن موجودی دیگران
 
 🪵 **جوایز رایگان**
 • `سانتی` — دریافت ۵ سانت (هر ۲۴ ساعت)
@@ -498,9 +477,7 @@ async def handle_message(bot: Robot, message: Message):
             await save_global_db()
             return
 
-        # =============================================
-        #  راهنمای لیدر
-        # =============================================
+        # راهنمای لیدر
         if lower_text == "راهنمای لیدر":
             sander = get_sander_id(user_id)
             if not sander or not is_global_owner(sander):
@@ -530,9 +507,7 @@ async def handle_message(bot: Robot, message: Message):
             await save_global_db()
             return
 
-        # =============================================
-        #  ثبت لقب
-        # =============================================
+        # ثبت لقب
         if lower_text.startswith("ثبت"):
             parts = lower_text.split(maxsplit=1)
             if len(parts) < 2:
@@ -553,9 +528,7 @@ async def handle_message(bot: Robot, message: Message):
             await message.reply(f"✅ **لقب جدید (سراسری):** `{new_nickname}`")
             return
 
-        # =============================================
-        #  دستورات مدیریت جهانی
-        # =============================================
+        # دستورات مدیریت جهانی
         if lower_text == "global_help":
             sander = get_sander_id(user_id)
             is_gm = is_global_owner(sander) if sander else False
@@ -650,12 +623,10 @@ async def handle_message(bot: Robot, message: Message):
                 return
             chat_data["owner_sander_id"] = None
             await save_global_db()
-            await message.reply("✅ **مالکیت محلی لغو شد.** هیچ کسی در حال حاضر مالک این چت نیست.")
+            await message.reply("✅ **مالکیت محلی لغو شد.**")
             return
 
-        # =============================================
-        #  سایر دستورات مالک
-        # =============================================
+        # سایر دستورات مالک (خلاصه)
         if lower_text == "ریست دول":
             if not is_owner_flag:
                 await message.reply("⛔ شما مالک نیستید!")
@@ -721,9 +692,6 @@ async def handle_message(bot: Robot, message: Message):
                 if gdata.get("sander_id", "").upper() == target_sid_input:
                     target_uid = uid
                     break
-                if str(uid) == target_sid_input:
-                    target_uid = uid
-                    break
             if not target_uid:
                 await message.reply(f"❌ کاربر `{target_sid_input}` یافت نشد.")
                 await save_global_db()
@@ -741,7 +709,7 @@ async def handle_message(bot: Robot, message: Message):
             if current_money < amount:
                 target_player["money"] = 0
                 await save_global_db()
-                await message.reply(f"✅ مبلغ کافی نبود! موجودی به صفر رسید.")
+                await message.reply(f"✅ موجودی به صفر رسید.")
             else:
                 target_player["money"] -= amount
                 await save_global_db()
@@ -750,9 +718,6 @@ async def handle_message(bot: Robot, message: Message):
 موجودی بعد: {target_player['money']}""")
             return
 
-        # =============================================
-        #  ساخت کد هدیه
-        # =============================================
         if lower_text.startswith("ساخت کد هدیه"):
             if not is_owner_flag:
                 await message.reply("⛔ شما مالک نیستید!")
@@ -820,9 +785,6 @@ async def handle_message(bot: Robot, message: Message):
 👥 محدودیت: {max_users}""")
             return
 
-        # =============================================
-        #  حذف کد هدیه
-        # =============================================
         if lower_text.startswith("هدیه حذف"):
             if not is_owner_flag:
                 await message.reply("⛔ شما مالک نیستید!")
@@ -849,9 +811,6 @@ async def handle_message(bot: Robot, message: Message):
                 await save_global_db()
             return
 
-        # =============================================
-        #  لیست هدیه
-        # =============================================
         if lower_text == "لیست هدیه":
             if not is_owner_flag:
                 await message.reply("⛔ شما مالک نیستید!")
@@ -870,9 +829,7 @@ async def handle_message(bot: Robot, message: Message):
             await save_global_db()
             return
 
-        # =============================================
-        #  سانتی
-        # =============================================
+        # جوایز رایگان
         if lower_text == "سانتی":
             now = time.time()
             global_time = chat_data.get("global_sanati_time", 0)
@@ -894,9 +851,6 @@ async def handle_message(bot: Robot, message: Message):
 قبل: {before_money} | بعد: {after_money}""")
             return
 
-        # =============================================
-        #  دود
-        # =============================================
         if lower_text == "دود":
             now = time.time()
             last_time = player.get("last_dood_time", 0)
@@ -917,9 +871,6 @@ async def handle_message(bot: Robot, message: Message):
 قبل: {before_money} | بعد: {after_money}""")
             return
 
-        # =============================================
-        #  گردونه
-        # =============================================
         if lower_text == "گردونه":
             now = time.time()
             last_spin = player.get("last_spin_time", 0)
@@ -953,9 +904,7 @@ async def handle_message(bot: Robot, message: Message):
                 await message.reply("😢 **پوچ!** دوباره تلاش کنید.")
             return
 
-        # =============================================
-        #  اهدای سانت
-        # =============================================
+        # انتقال پول
         if lower_text.startswith("اهدای سانت"):
             parts = lower_text[len("اهدای سانت"):].strip().split()
             if len(parts) < 2:
@@ -1018,9 +967,7 @@ async def handle_message(bot: Robot, message: Message):
 گیرنده: {receiver_display}""")
             return
 
-        # =============================================
-        #  هدیه
-        # =============================================
+        # هدیه
         if lower_text.startswith("هدیه"):
             parts = lower_text.split()
             if len(parts) < 2:
@@ -1074,9 +1021,7 @@ async def handle_message(bot: Robot, message: Message):
 قبل: {before_money} | بعد: {player['money']}""")
             return
 
-        # =============================================
-        #  دولداران
-        # =============================================
+        # دولداران
         if lower_text.startswith("دولداران"):
             parts = lower_text.split()
             if len(parts) == 1:
@@ -1142,9 +1087,7 @@ async def handle_message(bot: Robot, message: Message):
             await save_global_db()
             return
 
-        # =============================================
-        #  پروفایل
-        # =============================================
+        # پروفایل
         if lower_text == "پروف":
             stats = player.get("stats", {})
             wins = stats.get('wins', 0)
@@ -1222,9 +1165,6 @@ async def handle_message(bot: Robot, message: Message):
 هر کسی کد بالا را با دستور `تایید` وارد کند، حریف شما می‌شود.""")
             return
 
-        # =============================================
-        #  لیست مبارزه
-        # =============================================
         if lower_text == "لیست مبارزه":
             fights = []
             active_statuses = ["pending", "waiting_for_acceptance"]
@@ -1240,9 +1180,6 @@ async def handle_message(bot: Robot, message: Message):
             await save_global_db()
             return
 
-        # =============================================
-        #  تایید مبارزه
-        # =============================================
         if lower_text.startswith("تایید"):
             parts = lower_text.split()
             if len(parts) < 2:
@@ -1317,9 +1254,6 @@ async def handle_message(bot: Robot, message: Message):
             await save_global_db()
             return
 
-        # =============================================
-        #  لغو مبارزه
-        # =============================================
         if lower_text == "غیرفعال":
             cancelled = False
             for k, f in list(chat_data["fights"].items()):
@@ -1335,7 +1269,7 @@ async def handle_message(bot: Robot, message: Message):
             return
 
         # =============================================
-        #  متن
+        #  آمار پیام‌ها (متن)
         # =============================================
         if lower_text == "متن":
             if not is_owner_flag:
@@ -1370,10 +1304,9 @@ async def handle_message(bot: Robot, message: Message):
             return
 
         # =============================================
-        #  کازینو (با کوoldown ۲ دقیقه)
+        #  کازینو (شروع بازی)
         # =============================================
         if lower_text == "کازینو":
-            # بررسی کوoldown برای کاربر
             last_casino = player.get("last_casino_time", 0)
             now = time.time()
             if now - last_casino < CASINO_COOLDOWN:
@@ -1387,7 +1320,6 @@ async def handle_message(bot: Robot, message: Message):
                 await save_global_db()
                 return
 
-            # ثبت زمان شروع بازی (برای هاست)
             player["last_casino_time"] = now
             await save_global_db()
 
@@ -1403,11 +1335,13 @@ async def handle_message(bot: Robot, message: Message):
             await message.reply("🎰 **بازی کازینو شروع شد!**\nلطفاً مبلغ شرط خود را به **سانت** وارد کنید (عدد مثبت).")
             return
 
-        # مرحله waiting_bet
+        # =============================================
+        #  مدیریت مراحل کازینو (فقط میزبان)
+        # =============================================
+        # مرحله waiting_bet (فقط میزبان می‌تواند پاسخ دهد)
         if chat_id in casino_games and casino_games[chat_id]["stage"] == "waiting_bet":
             if user_id != casino_games[chat_id]["host"]:
-                await message.reply("⛔ فقط میزبان بازی می‌تواند مبلغ شرط را تعیین کند.")
-                await save_global_db()
+                # به کاربران دیگر هیچ پیامی نمی‌دهیم
                 return
             try:
                 bet_amount = int(to_en_digits(text))
@@ -1430,11 +1364,9 @@ async def handle_message(bot: Robot, message: Message):
             await save_global_db()
             return
 
-        # مرحله waiting_players
+        # مرحله waiting_players (فقط میزبان)
         if chat_id in casino_games and casino_games[chat_id]["stage"] == "waiting_players":
             if user_id != casino_games[chat_id]["host"]:
-                await message.reply("⛔ فقط میزبان بازی می‌تواند تعداد بازیکنان را تعیین کند.")
-                await save_global_db()
                 return
             try:
                 count = int(to_en_digits(text))
@@ -1461,7 +1393,9 @@ async def handle_message(bot: Robot, message: Message):
                 await save_global_db()
                 return
 
-        # دستور ورود به بازی (با کوoldown برای ورودکنندگان)
+        # =============================================
+        #  ورود به بازی کازینو (دستور جداگانه)
+        # =============================================
         if lower_text.startswith("ورود"):
             parts = lower_text.split()
             if len(parts) < 2:
@@ -1491,7 +1425,6 @@ async def handle_message(bot: Robot, message: Message):
                 await save_global_db()
                 return
 
-            # بررسی کوoldown برای فرد ورودی
             last_casino = player.get("last_casino_time", 0)
             now = time.time()
             if now - last_casino < CASINO_COOLDOWN:
@@ -1506,7 +1439,6 @@ async def handle_message(bot: Robot, message: Message):
                 await save_global_db()
                 return
 
-            # ثبت زمان ورود به عنوان آخرین زمان کازینو
             player["last_casino_time"] = now
             game["players"].append(user_id)
             await save_global_db()
@@ -1518,6 +1450,8 @@ async def handle_message(bot: Robot, message: Message):
                 await asyncio.sleep(2)
                 await process_multiplayer_game(chat_id, message)
             return
+
+        # در غیر این صورت، هیچ کاری نکنیم
 
     except Exception as e:
         print(f"Error in handle_message: {e}")
